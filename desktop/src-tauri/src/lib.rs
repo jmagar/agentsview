@@ -369,9 +369,18 @@ fn save_sidecar(app: &App, child: CommandChild) -> Result<(), DynError> {
 
 fn save_sidecar_port(app: &AppHandle, port: u16) {
     let state = app.state::<SidecarState>();
+    set_sidecar_port(&state, Some(port));
+}
+
+fn clear_sidecar_port(app: &AppHandle) {
+    let state = app.state::<SidecarState>();
+    set_sidecar_port(&state, None);
+}
+
+fn set_sidecar_port(state: &SidecarState, port: Option<u16>) {
     if let Ok(mut guard) = state.backend_port.lock() {
-        *guard = Some(port);
-    };
+        *guard = port;
+    }
 }
 
 fn forward_sidecar_logs(mut rx: CommandRx, window: WebviewWindow) {
@@ -414,6 +423,7 @@ fn forward_sidecar_logs(mut rx: CommandRx, window: WebviewWindow) {
                         "[agentsview] sidecar terminated (code: {:?}, signal: {:?})",
                         payload.code, payload.signal
                     );
+                    clear_sidecar_port(&window.app_handle());
                     if !startup_handled.swap(true, Ordering::SeqCst) {
                         let _ = window.eval(
                             "document.getElementById('status').textContent = 'AgentsView backend exited before startup completed.';",
@@ -493,9 +503,7 @@ fn stop_backend(app: &AppHandle) {
             eprintln!("[agentsview] failed to stop sidecar: {err}");
         }
     }
-    if let Ok(mut port_guard) = state.backend_port.lock() {
-        *port_guard = None;
-    };
+    set_sidecar_port(&state, None);
 }
 
 fn wait_for_server(port: u16, timeout: Duration) -> bool {
@@ -614,6 +622,26 @@ mod tests {
         let localhost_name =
             Url::parse("http://localhost:18080/").expect("valid localhost-name url");
         assert!(!is_allowed_navigation_url(&localhost_name, Some(18080)));
+    }
+
+    #[test]
+    fn set_sidecar_port_updates_and_clears_state() {
+        let state = SidecarState::default();
+        set_sidecar_port(&state, Some(18080));
+        let port = state
+            .backend_port
+            .lock()
+            .expect("lock backend_port after set")
+            .to_owned();
+        assert_eq!(port, Some(18080));
+
+        set_sidecar_port(&state, None);
+        let cleared = state
+            .backend_port
+            .lock()
+            .expect("lock backend_port after clear")
+            .to_owned();
+        assert_eq!(cleared, None);
     }
 
     #[test]
