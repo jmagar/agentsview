@@ -899,17 +899,32 @@ func TestCanceledContext(t *testing.T) {
 func TestStats(t *testing.T) {
 	d := testDB(t)
 
-	insertSession(t, d, "s1", "p1")
+	// Empty DB returns nil EarliestSession
+	stats, err := d.GetStats(context.Background())
+	requireNoError(t, err, "GetStats empty")
+	if stats.EarliestSession != nil {
+		t.Errorf(
+			"earliest_session = %v, want nil",
+			*stats.EarliestSession,
+		)
+	}
+
+	early := "2024-01-15T09:00:00Z"
+	late := "2024-06-01T14:00:00Z"
+	insertSession(t, d, "s1", "p1", func(s *Session) {
+		s.StartedAt = &late
+	})
 	insertSession(t, d, "s2", "p2", func(s *Session) {
 		s.Machine = "remote"
 		s.Agent = "codex"
+		s.StartedAt = &early
 	})
 	insertMessages(t, d,
 		userMsg("s1", 0, "hi"),
 		userMsg("s2", 0, "bye"),
 	)
 
-	stats, err := d.GetStats(context.Background())
+	stats, err = d.GetStats(context.Background())
 	requireNoError(t, err, "GetStats")
 	if stats.SessionCount != 2 {
 		t.Errorf("session_count = %d, want 2", stats.SessionCount)
@@ -922,6 +937,15 @@ func TestStats(t *testing.T) {
 	}
 	if stats.MachineCount != 2 {
 		t.Errorf("machine_count = %d, want 2", stats.MachineCount)
+	}
+	if stats.EarliestSession == nil {
+		t.Fatal("earliest_session is nil, want non-nil")
+	}
+	if *stats.EarliestSession != early {
+		t.Errorf(
+			"earliest_session = %q, want %q",
+			*stats.EarliestSession, early,
+		)
 	}
 }
 

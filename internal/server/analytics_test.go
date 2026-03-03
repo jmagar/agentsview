@@ -434,6 +434,47 @@ func TestAnalyticsHeatmap(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("ClampedRange", func(t *testing.T) {
+		// Request a range >366 days; entries should be clamped
+		params := map[string]string{
+			"from": "2022-01-01",
+			"to":   "2024-06-03",
+		}
+		w := te.get(t, buildURL("heatmap", params))
+		assertStatus(t, w, http.StatusOK)
+
+		resp := decode[db.HeatmapResponse](t, w)
+		if len(resp.Entries) > db.MaxHeatmapDays {
+			t.Errorf(
+				"len(Entries) = %d, want <= %d",
+				len(resp.Entries), db.MaxHeatmapDays,
+			)
+		}
+		if resp.EntriesFrom == "" {
+			t.Fatal("EntriesFrom is empty")
+		}
+		if resp.EntriesFrom <= "2022-01-01" {
+			t.Errorf(
+				"EntriesFrom = %q, want later than 2022-01-01",
+				resp.EntriesFrom,
+			)
+		}
+	})
+
+	t.Run("ShortRange_NoClamping", func(t *testing.T) {
+		// A 3-day range should not be clamped
+		w := te.get(t, buildURLWithRange("heatmap", nil))
+		assertStatus(t, w, http.StatusOK)
+
+		resp := decode[db.HeatmapResponse](t, w)
+		if resp.EntriesFrom != "2024-06-01" {
+			t.Errorf(
+				"EntriesFrom = %q, want %q",
+				resp.EntriesFrom, "2024-06-01",
+			)
+		}
+	})
 }
 
 func TestAnalyticsProjects(t *testing.T) {
