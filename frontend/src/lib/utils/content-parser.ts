@@ -355,10 +355,10 @@ export function enrichSegments(
       tcIdx++;
       const enriched: ContentSegment = { ...seg, toolCall: tc };
 
-      if (tc.tool_name === "Bash" && tc.input_json) {
+      if (tc.category === "Bash" && tc.input_json) {
         try {
           const input = JSON.parse(tc.input_json);
-          const fullCmd = input.command;
+          const fullCmd = input.command ?? input.cmd;
           if (fullCmd && fullCmd.includes("\n")) {
             enriched.content = `$ ${fullCmd}`;
             // Absorb orphaned text segments from truncated command

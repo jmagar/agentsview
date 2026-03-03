@@ -282,6 +282,10 @@ func formatCodexBashCall(
 
 	header := formatToolHeader("Bash", summary)
 	if cmd != "" {
+		firstLine, _, hasMore := strings.Cut(cmd, "\n")
+		if hasMore {
+			return header + "\n$ " + firstLine
+		}
 		return header + "\n$ " + cmd
 	}
 	if preview := codexArgPreview(args, rawArgs); preview != "" {

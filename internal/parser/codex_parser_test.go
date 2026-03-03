@@ -80,6 +80,21 @@ func TestParseCodexSession_FunctionCalls(t *testing.T) {
 		assert.Equal(t, `{"cmd":"rg --files","workdir":"/tmp"}`, msgs[1].ToolCalls[0].InputJSON)
 	})
 
+	t.Run("multi-line command truncated to first line", func(t *testing.T) {
+		multiLineCmd := "cat > file.toml <<'EOF'\n[package]\nname = \"foo\"\nEOF"
+		content := testjsonl.JoinJSONL(
+			testjsonl.CodexSessionMetaJSON("fc-ml", "/tmp", "user", tsEarly),
+			testjsonl.CodexMsgJSON("user", "create file", tsEarlyS1),
+			testjsonl.CodexFunctionCallArgsJSON("exec_command", map[string]any{
+				"cmd": multiLineCmd,
+			}, tsEarlyS5),
+		)
+		_, msgs := runCodexParserTest(t, "test.jsonl", content, false)
+		assert.Equal(t, "[Bash]\n$ cat > file.toml <<'EOF'", msgs[1].Content)
+		assert.Contains(t, msgs[1].ToolCalls[0].InputJSON, "cmd")
+		assert.Contains(t, msgs[1].ToolCalls[0].InputJSON, "[package]")
+	})
+
 	t.Run("apply_patch arguments summarize edited files", func(t *testing.T) {
 		content := loadFixture(t, "codex/fc_args_2.jsonl")
 		_, msgs := runCodexParserTest(t, "test.jsonl", content, false)
