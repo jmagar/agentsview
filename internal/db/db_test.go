@@ -1016,16 +1016,32 @@ func TestStats(t *testing.T) {
 func TestStatsEarliestFallsBackToCreatedAt(t *testing.T) {
 	d := testDB(t)
 
-	// Session with no started_at — earliest should fall
+	// Session with NULL started_at — earliest should fall
 	// back to created_at instead of being nil.
-	insertSession(t, d, "s-no-start", "proj")
-	insertMessages(t, d, userMsg("s-no-start", 0, "hi"))
+	insertSession(t, d, "s-null-start", "proj")
+	insertMessages(t, d, userMsg("s-null-start", 0, "hi"))
 
 	stats, err := d.GetStats(context.Background())
-	requireNoError(t, err, "GetStats")
+	requireNoError(t, err, "GetStats null started_at")
 	if stats.EarliestSession == nil {
 		t.Fatal(
-			"earliest_session nil when started_at missing;" +
+			"earliest_session nil when started_at is NULL;" +
+				" should fall back to created_at",
+		)
+	}
+
+	// Session with empty-string started_at — NULLIF should
+	// treat it the same as NULL.
+	insertSession(t, d, "s-empty-start", "proj", func(s *Session) {
+		s.StartedAt = Ptr("")
+	})
+	insertMessages(t, d, userMsg("s-empty-start", 0, "hey"))
+
+	stats, err = d.GetStats(context.Background())
+	requireNoError(t, err, "GetStats empty started_at")
+	if stats.EarliestSession == nil {
+		t.Fatal(
+			"earliest_session nil when started_at is '';" +
 				" should fall back to created_at",
 		)
 	}
