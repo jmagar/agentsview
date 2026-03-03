@@ -251,6 +251,21 @@ func TestParseCodexSession_InputJSON(t *testing.T) {
 		}})
 	})
 
+	t.Run("string-encoded empty JSON falls through to input", func(t *testing.T) {
+		content := testjsonl.JoinJSONL(
+			testjsonl.CodexSessionMetaJSON("ij-str-empty", "/tmp", "user", tsEarly),
+			testjsonl.CodexMsgJSON("user", "run", tsEarlyS1),
+			testjsonl.CodexFunctionCallFieldsJSON("exec_command",
+				`{}`, `{"cmd":"echo fallback"}`, tsEarlyS5),
+		)
+		_, msgs := runCodexParserTest(t, "test.jsonl", content, false)
+		assertToolCalls(t, msgs[1].ToolCalls, []ParsedToolCall{{
+			ToolName:  "exec_command",
+			Category:  "Bash",
+			InputJSON: `{"cmd":"echo fallback"}`,
+		}})
+	})
+
 	t.Run("no arguments yields empty InputJSON", func(t *testing.T) {
 		content := testjsonl.JoinJSONL(
 			testjsonl.CodexSessionMetaJSON("ij-5", "/tmp", "user", tsEarly),

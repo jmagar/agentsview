@@ -255,6 +255,9 @@ func extractCodexInputJSON(payload gjson.Result) string {
 				continue
 			}
 			if gjson.Valid(s) {
+				if s == "{}" || s == "[]" {
+					continue
+				}
 				return s
 			}
 			return arg.Str

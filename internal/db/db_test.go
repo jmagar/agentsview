@@ -292,12 +292,13 @@ func TestOpenRebuildOnDataVersion(t *testing.T) {
 	requireNoError(t, err, "initial open")
 
 	// Insert a session so we can verify it gets dropped.
-	d.UpsertSession(Session{
+	err = d.UpsertSession(Session{
 		ID:      "s1",
 		Project: "proj",
 		Machine: "local",
 		Agent:   "codex",
 	})
+	requireNoError(t, err, "insert session")
 	d.Close()
 
 	// Set user_version to 0 to simulate old data.
@@ -332,6 +333,38 @@ func TestOpenRebuildOnDataVersion(t *testing.T) {
 	if ver != dataVersion {
 		t.Fatalf("expected user_version=%d, got %d",
 			dataVersion, ver)
+	}
+}
+
+func TestOpenPreservesDataAtCurrentVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+
+	d, err := Open(path)
+	requireNoError(t, err, "initial open")
+	err = d.UpsertSession(Session{
+		ID:           "s1",
+		Project:      "proj",
+		Machine:      "local",
+		Agent:        "codex",
+		MessageCount: 1,
+	})
+	requireNoError(t, err, "insert session")
+	d.Close()
+
+	// Re-open without changing user_version: data survives.
+	d2, err := Open(path)
+	requireNoError(t, err, "reopen")
+	defer d2.Close()
+
+	page, err := d2.ListSessions(
+		context.Background(),
+		SessionFilter{Limit: 100},
+	)
+	requireNoError(t, err, "list sessions")
+	if len(page.Sessions) != 1 {
+		t.Fatalf("expected 1 session preserved, got %d",
+			len(page.Sessions))
 	}
 }
 
