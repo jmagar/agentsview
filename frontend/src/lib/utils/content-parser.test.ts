@@ -528,6 +528,22 @@ describe("enrichSegments", () => {
     }
   });
 
+  it("replaces truncated Codex Bash content with full cmd", () => {
+    const firstLine = "cat > file.toml <<'EOF'";
+    const fullCmd = `${firstLine}\n[package]\nname = "foo"\nEOF`;
+    // Backend truncates to first line; regex sees [Bash]\n$ first-line
+    const segments = parseContent(`[exec_command]\n$ ${firstLine}`);
+
+    const tc: ToolCall = {
+      tool_name: "exec_command",
+      category: "Bash",
+      input_json: JSON.stringify({ cmd: fullCmd }),
+    };
+    const result = enrichSegments(segments, [tc]);
+    expect(result[0]!.content).toBe(`$ ${fullCmd}`);
+    expect(result[0]!.toolCall).toBe(tc);
+  });
+
   it("does not replace single-line Bash content", () => {
     const segments = parseContent("[Bash]\n$ echo hi");
     const tc: ToolCall = {
