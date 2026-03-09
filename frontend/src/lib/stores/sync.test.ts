@@ -80,6 +80,61 @@ describe("commitsDisagree", () => {
   );
 });
 
+describe("SyncStore.loadStats", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const s = sync as unknown as Record<string, unknown>;
+    s.stats = null;
+  });
+
+  it("discards stale response when a newer request exists", async () => {
+    const older = {
+      session_count: 10,
+      message_count: 50,
+      project_count: 2,
+      machine_count: 1,
+      earliest_session: null,
+    };
+    const newer = {
+      session_count: 5,
+      message_count: 30,
+      project_count: 1,
+      machine_count: 1,
+      earliest_session: null,
+    };
+
+    let resolveOlder!: (v: typeof older) => void;
+    let resolveNewer!: (v: typeof newer) => void;
+
+    vi.mocked(api.getStats)
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          resolveOlder = r;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          resolveNewer = r;
+        }),
+      );
+
+    // Start first request (include one-shot).
+    const p1 = sync.loadStats({ include_one_shot: true });
+    // Start second request (exclude one-shot) before first resolves.
+    const p2 = sync.loadStats({});
+
+    // Resolve newer first, then older.
+    resolveNewer(newer);
+    await p2;
+    expect(sync.stats).toEqual(newer);
+
+    // Now resolve the older request — it should be discarded.
+    resolveOlder(older);
+    await p1;
+    expect(sync.stats).toEqual(newer);
+  });
+});
+
 describe("SyncStore.triggerResync", () => {
   beforeEach(() => {
     vi.clearAllMocks();

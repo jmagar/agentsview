@@ -519,3 +519,83 @@ describe("DisplayItem id stability", () => {
     expect(sessionItem!.id).toBe("session:claude:c1-session-0");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Starred-only count derivation
+// ---------------------------------------------------------------------------
+
+describe("starred-only session count", () => {
+  // Mirrors the component logic:
+  //   starred.filterOnly
+  //     ? groups.reduce((n, g) => n + g.sessions.length, 0)
+  //     : sessions.total
+
+  function filterGroupsForStarred(
+    groups: SessionGroup[],
+    starredIds: Set<string>,
+  ): SessionGroup[] {
+    return groups
+      .map((g) => ({
+        ...g,
+        sessions: g.sessions.filter((s) =>
+          starredIds.has(s.id),
+        ),
+      }))
+      .filter((g) => g.sessions.length > 0);
+  }
+
+  it("counts individual sessions, not groups", () => {
+    // Two groups, each with 3 sessions.
+    const g1 = makeGroup("claude", 3, "c");
+    const g2 = makeGroup("gpt", 3, "g");
+    const groups = [g1, g2];
+
+    // Star 2 sessions from g1 and 1 from g2.
+    const starred = new Set([
+      "c-session-0",
+      "c-session-2",
+      "g-session-1",
+    ]);
+    const filtered = filterGroupsForStarred(groups, starred);
+
+    // Should be 3 sessions across 2 groups, not 2 (groups).
+    const count = filtered.reduce(
+      (n, g) => n + g.sessions.length,
+      0,
+    );
+    expect(count).toBe(3);
+    expect(filtered).toHaveLength(2);
+  });
+
+  it("excludes groups with no starred sessions", () => {
+    const g1 = makeGroup("claude", 2, "c");
+    const g2 = makeGroup("gpt", 2, "g");
+    const groups = [g1, g2];
+
+    // Star only sessions from g1.
+    const starred = new Set(["c-session-0"]);
+    const filtered = filterGroupsForStarred(groups, starred);
+
+    const count = filtered.reduce(
+      (n, g) => n + g.sessions.length,
+      0,
+    );
+    expect(count).toBe(1);
+    expect(filtered).toHaveLength(1);
+  });
+
+  it("returns zero when nothing is starred", () => {
+    const groups = [makeGroup("claude", 3, "c")];
+    const filtered = filterGroupsForStarred(
+      groups,
+      new Set(),
+    );
+
+    const count = filtered.reduce(
+      (n, g) => n + g.sessions.length,
+      0,
+    );
+    expect(count).toBe(0);
+    expect(filtered).toHaveLength(0);
+  });
+});
