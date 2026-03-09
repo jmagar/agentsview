@@ -596,37 +596,36 @@ func launchResumeDarwin(
 		)
 		return exec.Command("osascript", "-e", script)
 	case "ghostty":
-		args := []string{"-na", "Ghostty", "--args"}
+		var args []string
 		if cwd != "" {
 			args = append(args, "--working-directory="+cwd)
 		}
 		args = append(args, "-e", "bash", "-c",
 			cmd+"; exec bash")
-		return exec.Command("open", args...)
+		return macExecCommand(o.Bin, args...)
 	case "kitty":
-		args := []string{"-na", "kitty", "--args"}
+		var args []string
 		if cwd != "" {
 			args = append(args, "-d", cwd)
 		}
 		args = append(args, "bash", "-c", cmd+"; exec bash")
-		return exec.Command("open", args...)
+		return macExecCommand(o.Bin, args...)
 	case "alacritty":
-		args := []string{"-na", "Alacritty", "--args"}
+		var args []string
 		if cwd != "" {
 			args = append(args, "--working-directory", cwd)
 		}
 		args = append(args, "-e", "bash", "-c",
 			cmd+"; exec bash")
-		return exec.Command("open", args...)
+		return macExecCommand(o.Bin, args...)
 	case "wezterm":
-		args := []string{"-na", "WezTerm", "--args",
-			"start"}
+		args := []string{"start"}
 		if cwd != "" {
 			args = append(args, "--cwd", cwd)
 		}
 		args = append(args, "--", "bash", "-c",
 			cmd+"; exec bash")
-		return exec.Command("open", args...)
+		return macExecCommand(o.Bin, args...)
 	default:
 		return nil
 	}

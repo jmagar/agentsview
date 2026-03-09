@@ -73,11 +73,12 @@ var darwinOpenerCandidates = []openerCandidate{
 	{"xcode", "Xcode", "editor", []string{"xed"}, ""},
 	{"sublime", "Sublime Text", "editor", []string{"subl"}, ""},
 
-	// Terminals — Ghostty, iTerm2, kitty, and Terminal.app are macOS GUI
-	// apps; detect via app bundle path rather than LookPath.
-	{"ghostty", "Ghostty", "terminal", nil, "/Applications/Ghostty.app"},
+	// Terminals — Ghostty, iTerm2, kitty, and Terminal.app are macOS
+	// GUI apps; detect via app bundle first, fall back to PATH binary
+	// for non-default installs (e.g. Homebrew formula).
+	{"ghostty", "Ghostty", "terminal", []string{"ghostty"}, "/Applications/Ghostty.app"},
 	{"iterm2", "iTerm2", "terminal", nil, "/Applications/iTerm.app"},
-	{"kitty", "kitty", "terminal", nil, "/Applications/kitty.app"},
+	{"kitty", "kitty", "terminal", []string{"kitty"}, "/Applications/kitty.app"},
 	{"alacritty", "Alacritty", "terminal", []string{"alacritty"}, ""},
 	{"wezterm", "WezTerm", "terminal", []string{"wezterm"}, ""},
 	{"terminal", "Terminal", "terminal", nil, "/System/Applications/Utilities/Terminal.app"},
@@ -250,23 +251,31 @@ func launchOpener(o Opener, dir string) error {
 	return nil
 }
 
+// isAppBundle returns true if the path looks like a macOS .app bundle.
+func isAppBundle(bin string) bool {
+	return strings.HasSuffix(bin, ".app")
+}
+
+// macExecCommand builds an exec.Cmd for macOS. If bin is an .app
+// bundle it wraps with `open -na`; otherwise executes the binary
+// directly. This keeps detection and launch consistent regardless
+// of whether the opener was found via app bundle or PATH.
+func macExecCommand(bin string, args ...string) *exec.Cmd {
+	if isAppBundle(bin) {
+		openArgs := []string{"-na", bin, "--args"}
+		openArgs = append(openArgs, args...)
+		return exec.Command("open", openArgs...)
+	}
+	return exec.Command(bin, args...)
+}
+
 func launchTerminalInDir(o Opener, dir string) *exec.Cmd {
 	if runtime.GOOS == "darwin" {
 		switch o.ID {
-		case "ghostty":
-			// Ghostty accepts --working-directory via CLI args passed
-			// through `open -a`. The -n flag opens a new instance.
-			return exec.Command("open", "-na", "Ghostty",
-				"--args", "--working-directory="+dir)
-		case "kitty":
-			return exec.Command("open", "-na", "kitty",
-				"--args", "-d", dir)
 		case "iterm2":
-			// Build shell command first, then AppleScript-escape the
-			// entire string once. shellQuote provides POSIX quoting for
-			// the directory, then escapeForAppleScript escapes the whole
-			// command for embedding in an AppleScript string literal.
-			shellCmd := fmt.Sprintf("cd %s && exec bash", shellQuote(dir))
+			shellCmd := fmt.Sprintf(
+				"cd %s && exec bash", shellQuote(dir),
+			)
 			script := fmt.Sprintf(
 				`tell application "iTerm"
 					create window with default profile command "%s"
@@ -284,12 +293,17 @@ func launchTerminalInDir(o Opener, dir string) *exec.Cmd {
 				escapeForAppleScript(shellCmd),
 			)
 			return exec.Command("osascript", "-e", script)
+		case "ghostty":
+			return macExecCommand(o.Bin,
+				"--working-directory="+dir)
+		case "kitty":
+			return macExecCommand(o.Bin, "-d", dir)
 		case "alacritty":
-			return exec.Command("open", "-na", "Alacritty",
-				"--args", "--working-directory", dir)
+			return macExecCommand(o.Bin,
+				"--working-directory", dir)
 		case "wezterm":
-			return exec.Command("open", "-na", "WezTerm",
-				"--args", "start", "--cwd", dir)
+			return macExecCommand(o.Bin,
+				"start", "--cwd", dir)
 		}
 	}
 
@@ -306,7 +320,8 @@ func launchTerminalInDir(o Opener, dir string) *exec.Cmd {
 	case "konsole":
 		return exec.Command(o.Bin, "--workdir", dir)
 	case "xfce4-terminal":
-		return exec.Command(o.Bin, "--default-working-directory="+dir)
+		return exec.Command(o.Bin,
+			"--default-working-directory="+dir)
 	case "tilix":
 		return exec.Command(o.Bin, "--working-directory="+dir)
 	case "ghostty":
