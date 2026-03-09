@@ -131,6 +131,11 @@ func (s *Server) routes() {
 		"POST /api/v1/sessions/{id}/publish", s.withTimeout(s.handlePublishSession),
 	)
 	s.mux.Handle(
+		"POST /api/v1/sessions/{id}/resume", s.withTimeout(s.handleResumeSession),
+	)
+	s.mux.Handle("GET /api/v1/openers", s.withTimeout(s.handleListOpeners))
+	s.mux.Handle("POST /api/v1/sessions/{id}/open", s.withTimeout(s.handleOpenSession))
+	s.mux.Handle(
 		"POST /api/v1/sessions/upload", s.withTimeout(s.handleUploadSession),
 	)
 	s.mux.Handle("GET /api/v1/analytics/summary", s.withTimeout(s.handleAnalyticsSummary))
@@ -160,6 +165,10 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/config/github", s.withTimeout(s.handleGetGithubConfig))
 	s.mux.Handle(
 		"POST /api/v1/config/github", s.withTimeout(s.handleSetGithubConfig),
+	)
+	s.mux.Handle("GET /api/v1/config/terminal", s.withTimeout(s.handleGetTerminalConfig))
+	s.mux.Handle(
+		"POST /api/v1/config/terminal", s.withTimeout(s.handleSetTerminalConfig),
 	)
 
 	s.mux.Handle("GET /api/v1/starred", s.withTimeout(s.handleListStarred))

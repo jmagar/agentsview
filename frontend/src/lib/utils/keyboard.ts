@@ -2,7 +2,12 @@ import { ui } from "../stores/ui.svelte.js";
 import { sessions } from "../stores/sessions.svelte.js";
 import { starred } from "../stores/starred.svelte.js";
 import { sync } from "../stores/sync.svelte.js";
-import { getExportUrl } from "../api/client.js";
+import {
+  getExportUrl,
+  resumeSession,
+} from "../api/client.js";
+import { supportsResume, buildResumeCommand } from "./resume.js";
+import { copyToClipboard } from "./clipboard.js";
 
 function isInputFocused(): boolean {
   const el = document.activeElement;
@@ -99,6 +104,26 @@ export function registerShortcuts(
       s: () => {
         if (sessions.activeSessionId) {
           starred.toggle(sessions.activeSessionId);
+        }
+      },
+      c: () => {
+        const session = sessions.activeSession;
+        if (session && supportsResume(session.agent)) {
+          // Copy resume command to clipboard. Use backend-built command
+          // (includes cd to project dir) with local fallback.
+          resumeSession(session.id, { command_only: true }).then((resp) => {
+            const cmd = resp.command || buildResumeCommand(
+              session.agent,
+              session.id,
+            );
+            if (cmd) copyToClipboard(cmd);
+          }).catch(() => {
+            const cmd = buildResumeCommand(
+              session.agent,
+              session.id,
+            );
+            if (cmd) copyToClipboard(cmd);
+          });
         }
       },
       "?": () => {

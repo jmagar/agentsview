@@ -1923,6 +1923,7 @@ func TestUploadSession(t *testing.T) {
 	}
 	if sess == nil {
 		t.Fatal("session not found in DB")
+		return
 	}
 	if sess.Project != "myproj" {
 		t.Errorf("stored project = %q", sess.Project)
@@ -1954,6 +1955,7 @@ func TestUploadSession_InfersRelationshipType(t *testing.T) {
 	}
 	if sess == nil {
 		t.Fatal("session not found in DB")
+		return
 	}
 	if sess.RelationshipType != "subagent" {
 		t.Errorf(

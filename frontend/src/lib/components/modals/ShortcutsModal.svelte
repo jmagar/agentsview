@@ -14,6 +14,7 @@
     { key: "s", action: "Star / unstar session" },
     { key: "e", action: "Export session" },
     { key: "p", action: "Publish to Gist" },
+    { key: "c", action: "Resume session in terminal" },
     { key: "?", action: "Show this modal" },
   ];
 

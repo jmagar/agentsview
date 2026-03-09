@@ -330,6 +330,33 @@ export function getExportUrl(sessionId: string): string {
   return `${BASE}/sessions/${sessionId}/export`;
 }
 
+/* Resume in terminal */
+
+export interface ResumeRequest {
+  skip_permissions?: boolean;
+  fork_session?: boolean;
+  command_only?: boolean;
+}
+
+export interface ResumeResponse {
+  launched: boolean;
+  terminal?: string;
+  command: string;
+  cwd?: string;
+  error?: string;
+}
+
+export function resumeSession(
+  sessionId: string,
+  flags: ResumeRequest = {},
+): Promise<ResumeResponse> {
+  return fetchJSON(`/sessions/${sessionId}/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(flags),
+  });
+}
+
 /* Publish / GitHub config */
 
 export function publishSession(sessionId: string): Promise<PublishResponse> {
@@ -390,6 +417,62 @@ export async function bulkStarSessions(
     const body = await res.text();
     throw new ApiError(res.status, apiErrorMessage(res.status, body));
   }
+}
+
+/* Openers — Conductor-style "Open in" */
+
+export interface Opener {
+  id: string;
+  name: string;
+  kind: "editor" | "terminal" | "files" | "action";
+  bin: string;
+}
+
+export interface OpenersResponse {
+  openers: Opener[];
+}
+
+export function listOpeners(): Promise<OpenersResponse> {
+  return fetchJSON("/openers");
+}
+
+export interface OpenResponse {
+  launched: boolean;
+  opener: string;
+  path: string;
+}
+
+export function openSession(
+  sessionId: string,
+  openerId: string,
+): Promise<OpenResponse> {
+  return fetchJSON(`/sessions/${sessionId}/open`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ opener_id: openerId }),
+  });
+}
+
+/* Terminal config */
+
+export interface TerminalConfig {
+  mode: "auto" | "custom" | "clipboard";
+  custom_bin?: string;
+  custom_args?: string;
+}
+
+export function getTerminalConfig(): Promise<TerminalConfig> {
+  return fetchJSON("/config/terminal");
+}
+
+export function setTerminalConfig(
+  cfg: TerminalConfig,
+): Promise<TerminalConfig> {
+  return fetchJSON("/config/terminal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cfg),
+  });
 }
 
 /* Analytics */

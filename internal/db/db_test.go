@@ -746,6 +746,7 @@ func TestSessionParentSessionID(t *testing.T) {
 		requireNoError(t, err, "GetSessionFull")
 		if got == nil {
 			t.Fatal("session not found")
+			return
 		}
 		if got.ParentSessionID == nil ||
 			*got.ParentSessionID != "parent-uuid" {
@@ -1767,6 +1768,7 @@ func TestGetSessionFull(t *testing.T) {
 		requireNoError(t, err, "GetSessionFull")
 		if got == nil {
 			t.Fatal("expected non-nil session")
+			return
 		}
 		want := &Session{
 			ID:           "full-1",
@@ -1797,6 +1799,7 @@ func TestGetSessionFull(t *testing.T) {
 		requireNoError(t, err, "GetSessionFull")
 		if got == nil {
 			t.Fatal("expected non-nil session")
+			return
 		}
 		want := &Session{
 			ID:           "full-2",
@@ -3137,6 +3140,7 @@ func TestCopyOrphanedDataFrom(t *testing.T) {
 	requireNoError(t, err, "GetSession s2")
 	if s == nil {
 		t.Fatal("orphaned session s2 not found in dst")
+		return
 	}
 	if s.Agent != "codex" {
 		t.Errorf("s2 agent = %q, want %q", s.Agent, "codex")
