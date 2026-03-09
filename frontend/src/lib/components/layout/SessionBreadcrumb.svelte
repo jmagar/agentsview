@@ -4,6 +4,7 @@
   import {
     resumeSession,
     openSession,
+    getSessionDirectory,
     listOpeners,
     type Opener,
   } from "../../api/client.js";
@@ -159,28 +160,13 @@
   async function handleCopyFilePath() {
     if (!session) return;
     showOpenMenu = false;
-    // Use session.project directly if it's an absolute path.
-    if (session.project?.startsWith("/")) {
-      const ok = await copyToClipboard(session.project);
+    try {
+      const { path } = await getSessionDirectory(session.id);
+      const ok = await copyToClipboard(path);
       showFeedback(ok ? "Path copied!" : "Failed");
-      return;
+    } catch {
+      showFeedback("No path available");
     }
-    // Otherwise try the resume API for resolved cwd.
-    if (canResume) {
-      try {
-        const resp = await resumeSession(
-          session.id, { command_only: true },
-        );
-        if (resp.cwd) {
-          const ok = await copyToClipboard(resp.cwd);
-          showFeedback(ok ? "Path copied!" : "Failed");
-          return;
-        }
-      } catch {
-        // No cwd available.
-      }
-    }
-    showFeedback("No path available");
   }
 
   async function handleOpenIn(opener: Opener) {
@@ -660,12 +646,6 @@
     letter-spacing: 0.04em;
   }
 
-  .open-menu-empty {
-    padding: 8px 10px;
-    font-size: 11px;
-    color: var(--text-muted);
-    text-align: center;
-  }
 
   .session-id {
     font-size: 10px;

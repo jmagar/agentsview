@@ -152,6 +152,32 @@ func (s *Server) handleListOpeners(
 	})
 }
 
+func (s *Server) handleGetSessionDir(
+	w http.ResponseWriter, r *http.Request,
+) {
+	sessionID := r.PathValue("id")
+	session, err := s.db.GetSessionFull(r.Context(), sessionID)
+	if err != nil {
+		if handleContextError(w, err) {
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if session == nil || session.DeletedAt != nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	dir := resolveSessionDir(session)
+	if dir == "" {
+		writeError(w, http.StatusNotFound, "no directory found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"path": dir,
+	})
+}
+
 type openRequest struct {
 	OpenerID string `json:"opener_id"`
 }

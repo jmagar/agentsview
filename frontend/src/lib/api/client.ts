@@ -420,6 +420,14 @@ export async function bulkStarSessions(
   }
 }
 
+/* Session directory */
+
+export function getSessionDirectory(
+  sessionId: string,
+): Promise<{ path: string }> {
+  return fetchJSON(`/sessions/${sessionId}/directory`);
+}
+
 /* Openers — Conductor-style "Open in" */
 
 export interface Opener {
