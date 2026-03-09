@@ -43,21 +43,28 @@ func (db *DB) FileBackedSessionCount(
 
 // GetStats returns database statistics, counting only root
 // sessions with messages (matching the session list filter).
-func (db *DB) GetStats(ctx context.Context) (Stats, error) {
-	const query = `
+func (db *DB) GetStats(
+	ctx context.Context, excludeOneShot bool,
+) (Stats, error) {
+	filter := rootSessionFilter
+	if excludeOneShot {
+		filter += " AND user_message_count > 1"
+	}
+	query := fmt.Sprintf(`
 		SELECT
 			(SELECT COUNT(*) FROM sessions
-			 WHERE ` + rootSessionFilter + `),
+			 WHERE %s),
 			(SELECT value FROM stats
 			 WHERE key = 'message_count'),
 			(SELECT COUNT(DISTINCT project) FROM sessions
-			 WHERE ` + rootSessionFilter + `),
+			 WHERE %s),
 			(SELECT COUNT(DISTINCT machine) FROM sessions
-			 WHERE ` + rootSessionFilter + `),
+			 WHERE %s),
 			(SELECT MIN(COALESCE(
 				NULLIF(started_at, ''), created_at
 			 )) FROM sessions
-			 WHERE ` + rootSessionFilter + `)`
+			 WHERE %s)`,
+		filter, filter, filter, filter)
 
 	var s Stats
 	err := db.getReader().QueryRowContext(ctx, query).Scan(

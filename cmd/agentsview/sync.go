@@ -104,7 +104,7 @@ func runSync(args []string) {
 	}
 
 	fmt.Println()
-	stats, err := database.GetStats(context.Background())
+	stats, err := database.GetStats(context.Background(), false)
 	if err == nil {
 		fmt.Printf(
 			"Database: %d sessions, %d messages\n",

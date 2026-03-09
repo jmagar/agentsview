@@ -1138,7 +1138,7 @@ func TestCanceledContext(t *testing.T) {
 			return err
 		}, false},
 		{"GetStats", func() error {
-			_, err := d.GetStats(ctx)
+			_, err := d.GetStats(ctx, false)
 			return err
 		}, false},
 	}
@@ -1157,7 +1157,7 @@ func TestStats(t *testing.T) {
 	d := testDB(t)
 
 	// Empty DB returns nil EarliestSession
-	stats, err := d.GetStats(context.Background())
+	stats, err := d.GetStats(context.Background(), false)
 	requireNoError(t, err, "GetStats empty")
 	if stats.EarliestSession != nil {
 		t.Errorf(
@@ -1181,7 +1181,7 @@ func TestStats(t *testing.T) {
 		userMsg("s2", 0, "bye"),
 	)
 
-	stats, err = d.GetStats(context.Background())
+	stats, err = d.GetStats(context.Background(), false)
 	requireNoError(t, err, "GetStats")
 	if stats.SessionCount != 2 {
 		t.Errorf("session_count = %d, want 2", stats.SessionCount)
@@ -1214,7 +1214,7 @@ func TestStatsEarliestFallsBackToCreatedAt(t *testing.T) {
 	insertSession(t, d, "s-null-start", "proj")
 	insertMessages(t, d, userMsg("s-null-start", 0, "hi"))
 
-	stats, err := d.GetStats(context.Background())
+	stats, err := d.GetStats(context.Background(), false)
 	requireNoError(t, err, "GetStats null started_at")
 	if stats.EarliestSession == nil {
 		t.Fatal(
@@ -1230,7 +1230,7 @@ func TestStatsEarliestFallsBackToCreatedAt(t *testing.T) {
 	})
 	insertMessages(t, d, userMsg("s-empty-start", 0, "hey"))
 
-	stats, err = d.GetStats(context.Background())
+	stats, err = d.GetStats(context.Background(), false)
 	requireNoError(t, err, "GetStats empty started_at")
 	if stats.EarliestSession == nil {
 		t.Fatal(
@@ -1253,7 +1253,7 @@ func TestStatsEarliestFallsBackToCreatedAt(t *testing.T) {
 	})
 	insertMessages(t, d, userMsg("s-old", 0, "hello"))
 
-	stats, err = d.GetStats(context.Background())
+	stats, err = d.GetStats(context.Background(), false)
 	requireNoError(t, err, "GetStats with old session")
 	if stats.EarliestSession == nil {
 		t.Fatal("earliest_session nil")
@@ -1640,7 +1640,7 @@ func TestDeleteSessions(t *testing.T) {
 		insertMessages(t, d, userMsg(id, 0, "msg for "+id))
 	}
 
-	stats, _ := d.GetStats(context.Background())
+	stats, _ := d.GetStats(context.Background(), false)
 	if stats.SessionCount != 3 {
 		t.Fatalf("initial sessions = %d, want 3", stats.SessionCount)
 	}
@@ -1667,7 +1667,7 @@ func TestDeleteSessions(t *testing.T) {
 		t.Errorf("s2 messages = %d, want 1", len(msgs))
 	}
 
-	stats, _ = d.GetStats(context.Background())
+	stats, _ = d.GetStats(context.Background(), false)
 	if stats.SessionCount != 1 {
 		t.Errorf("session_count = %d, want 1", stats.SessionCount)
 	}

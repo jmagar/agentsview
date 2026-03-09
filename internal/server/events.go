@@ -211,7 +211,8 @@ func (s *Server) handleSyncStatus(
 func (s *Server) handleGetStats(
 	w http.ResponseWriter, r *http.Request,
 ) {
-	stats, err := s.db.GetStats(r.Context())
+	excludeOneShot := r.URL.Query().Get("include_one_shot") != "true"
+	stats, err := s.db.GetStats(r.Context(), excludeOneShot)
 	if err != nil {
 		if handleContextError(w, err) {
 			return

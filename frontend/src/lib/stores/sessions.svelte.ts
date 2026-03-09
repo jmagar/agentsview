@@ -1,5 +1,6 @@
 import * as api from "../api/client.js";
 import type { Session, ProjectInfo, AgentInfo } from "../api/types.js";
+import { sync } from "./sync.svelte.js";
 
 const SESSION_PAGE_SIZE = 500;
 
@@ -450,6 +451,11 @@ class SessionsStore {
     this.agentsPromise = null;
     this.loadProjects();
     this.loadAgents();
+    sync.loadStats(
+      this.filters.includeOneShot
+        ? { include_one_shot: true }
+        : {},
+    );
   }
 
   /** Remove one or all entries from the undo toast list. */

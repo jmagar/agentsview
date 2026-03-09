@@ -171,8 +171,10 @@ export function getAgents(
   return fetchJSON(`/agents${buildQuery({ ...params })}`);
 }
 
-export function getStats(): Promise<Stats> {
-  return fetchJSON("/stats");
+export function getStats(
+  params: { include_one_shot?: boolean } = {},
+): Promise<Stats> {
+  return fetchJSON(`/stats${buildQuery({ ...params })}`);
 }
 
 export function getVersion(): Promise<VersionInfo> {
