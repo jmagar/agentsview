@@ -224,16 +224,9 @@
     openers.filter((o) => o.kind === "files"),
   );
 
-  const hasProjectDir = $derived(
-    session?.project?.startsWith("/") ?? false,
-  );
-
-  const showDropdown = $derived(
-    canResume ||
-    editorOpeners.length > 0 ||
-    fileOpeners.length > 0 ||
-    hasProjectDir,
-  );
+  // Always show for any session — at minimum "Copy directory
+  // path" is available via the server-side resolution endpoint.
+  const showDropdown = $derived(!!session);
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
