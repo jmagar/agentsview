@@ -1,6 +1,12 @@
 package server
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/wesm/agentsview/internal/db"
+)
 
 func TestShellQuote(t *testing.T) {
 	tests := []struct {
@@ -42,4 +48,88 @@ func TestDetectTerminalLinux_NoTerminal(t *testing.T) {
 	// We just check it doesn't panic. The error may or may not
 	// occur depending on the environment.
 	_ = err
+}
+
+func TestResolveSessionDir(t *testing.T) {
+	// Create a real temp directory for the "absolute path" cases.
+	tmpDir := t.TempDir()
+
+	// Create a session file with a cwd field.
+	sessionFile := filepath.Join(tmpDir, "session.jsonl")
+	cwdDir := filepath.Join(tmpDir, "project")
+	if err := os.Mkdir(cwdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"cwd":"` + cwdDir + `"}` + "\n"
+	if err := os.WriteFile(sessionFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		session *db.Session
+		want    string
+	}{
+		{
+			name: "absolute project path",
+			session: &db.Session{
+				Project: tmpDir,
+			},
+			want: tmpDir,
+		},
+		{
+			name: "relative project name returns empty",
+			session: &db.Session{
+				Project: "my-repo",
+			},
+			want: "",
+		},
+		{
+			name: "nil file_path with relative project",
+			session: &db.Session{
+				Project:  "my-repo",
+				FilePath: nil,
+			},
+			want: "",
+		},
+		{
+			name: "file_path with cwd in session file",
+			session: &db.Session{
+				Project:  "my-repo",
+				FilePath: &sessionFile,
+			},
+			want: cwdDir,
+		},
+		{
+			name: "file_path takes precedence over project",
+			session: &db.Session{
+				Project:  tmpDir,
+				FilePath: &sessionFile,
+			},
+			want: cwdDir,
+		},
+		{
+			name: "nonexistent file_path falls back to project",
+			session: func() *db.Session {
+				bad := "/nonexistent/session.jsonl"
+				return &db.Session{
+					Project:  tmpDir,
+					FilePath: &bad,
+				}
+			}(),
+			want: tmpDir,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveSessionDir(tt.session)
+			if got != tt.want {
+				t.Errorf(
+					"resolveSessionDir() = %q, want %q",
+					got, tt.want,
+				)
+			}
+		})
+	}
 }

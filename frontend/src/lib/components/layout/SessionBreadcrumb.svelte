@@ -140,6 +140,33 @@
     }
   }
 
+  async function handleResumeInTerminal() {
+    if (!session) return;
+    showOpenMenu = false;
+    try {
+      const resp = await resumeSession(session.id);
+      if (resp.launched) {
+        showFeedback(`Launched in ${resp.terminal ?? "terminal"}`);
+        return;
+      }
+      // Launch not possible — copy command to clipboard instead.
+      if (resp.command) {
+        const ok = await copyToClipboard(resp.command);
+        showFeedback(ok ? "Command copied!" : "Failed");
+        return;
+      }
+    } catch {
+      // Fall back to local command build.
+    }
+    const cmd = buildResumeCommand(session.agent, session.id);
+    if (cmd) {
+      const ok = await copyToClipboard(cmd);
+      showFeedback(ok ? "Command copied!" : "Failed");
+    } else {
+      showFeedback("Not supported");
+    }
+  }
+
   async function handleCopyResumeCommand() {
     if (!session) return;
     showOpenMenu = false;
@@ -298,7 +325,7 @@
               <div class="open-menu-divider"></div>
             {/if}
             {#if canResume}
-              <button class="open-menu-item" onclick={handleCopyResumeCommand}>
+              <button class="open-menu-item" onclick={handleResumeInTerminal}>
                 <span class="open-menu-num">
                   <!-- terminal icon -->
                   <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
@@ -306,7 +333,17 @@
                     <path d="M3.17 5.47a.75.75 0 011.06 0L6.53 7.77a.75.75 0 010 1.06L4.23 11.13a.75.75 0 01-1.06-1.06L5.44 7.8 3.17 6.53a.75.75 0 010-1.06zM7 10.25a.75.75 0 01.75-.75h3.5a.75.75 0 010 1.5h-3.5a.75.75 0 01-.75-.75z"/>
                   </svg>
                 </span>
-                <span class="open-menu-name">Resume command</span>
+                <span class="open-menu-name">Resume in terminal</span>
+              </button>
+              <button class="open-menu-item" onclick={handleCopyResumeCommand}>
+                <span class="open-menu-num">
+                  <!-- copy icon -->
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z"/>
+                    <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z"/>
+                  </svg>
+                </span>
+                <span class="open-menu-name">Copy resume command</span>
               </button>
             {/if}
             <button class="open-menu-item" onclick={handleCopyPath}>

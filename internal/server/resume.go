@@ -70,8 +70,9 @@ func (s *Server) handleResumeSession(
 ) {
 	id := r.PathValue("id")
 
-	// Look up the session to get agent type.
-	session, err := s.db.GetSession(r.Context(), id)
+	// Look up the session with full file metadata so
+	// resolveSessionDir can read the session file for cwd.
+	session, err := s.db.GetSessionFull(r.Context(), id)
 	if err != nil {
 		if handleContextError(w, err) {
 			return

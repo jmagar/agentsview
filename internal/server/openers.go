@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -19,73 +20,75 @@ type Opener struct {
 	Bin  string `json:"bin"`
 }
 
-// openerCandidate is a binary we check for on PATH.
+// openerCandidate is a binary we check for on PATH, or a macOS
+// app bundle we check for on disk.
 type openerCandidate struct {
-	id   string
-	name string
-	kind string
-	bins []string // alternatives to try in order
+	id      string
+	name    string
+	kind    string
+	bins    []string // alternatives to try via LookPath
+	appPath string   // macOS .app bundle path (checked via os.Stat)
 }
 
 // Linux + cross-platform candidates.
 var openerCandidates = []openerCandidate{
 	// File managers
-	{"nautilus", "Files", "files", []string{"nautilus"}},
-	{"dolphin", "Dolphin", "files", []string{"dolphin"}},
-	{"thunar", "Thunar", "files", []string{"thunar"}},
-	{"nemo", "Nemo", "files", []string{"nemo"}},
-	{"pcmanfm", "PCManFM", "files", []string{"pcmanfm"}},
+	{"nautilus", "Files", "files", []string{"nautilus"}, ""},
+	{"dolphin", "Dolphin", "files", []string{"dolphin"}, ""},
+	{"thunar", "Thunar", "files", []string{"thunar"}, ""},
+	{"nemo", "Nemo", "files", []string{"nemo"}, ""},
+	{"pcmanfm", "PCManFM", "files", []string{"pcmanfm"}, ""},
 
 	// Editors / IDEs
-	{"cursor", "Cursor", "editor", []string{"cursor"}},
-	{"vscode", "VS Code", "editor", []string{"code"}},
-	{"zed", "Zed", "editor", []string{"zed"}},
-	{"sublime", "Sublime Text", "editor", []string{"subl"}},
-	{"vim", "Vim", "editor", []string{"nvim", "vim"}},
-	{"emacs", "Emacs", "editor", []string{"emacs"}},
-	{"intellij", "IntelliJ IDEA", "editor", []string{"idea"}},
-	{"goland", "GoLand", "editor", []string{"goland"}},
-	{"webstorm", "WebStorm", "editor", []string{"webstorm"}},
+	{"cursor", "Cursor", "editor", []string{"cursor"}, ""},
+	{"vscode", "VS Code", "editor", []string{"code"}, ""},
+	{"zed", "Zed", "editor", []string{"zed"}, ""},
+	{"sublime", "Sublime Text", "editor", []string{"subl"}, ""},
+	{"vim", "Vim", "editor", []string{"nvim", "vim"}, ""},
+	{"emacs", "Emacs", "editor", []string{"emacs"}, ""},
+	{"intellij", "IntelliJ IDEA", "editor", []string{"idea"}, ""},
+	{"goland", "GoLand", "editor", []string{"goland"}, ""},
+	{"webstorm", "WebStorm", "editor", []string{"webstorm"}, ""},
 
 	// Terminals
-	{"ghostty", "Ghostty", "terminal", []string{"ghostty"}},
-	{"kitty", "kitty", "terminal", []string{"kitty"}},
-	{"alacritty", "Alacritty", "terminal", []string{"alacritty"}},
-	{"wezterm", "WezTerm", "terminal", []string{"wezterm"}},
-	{"gnome-terminal", "GNOME Terminal", "terminal", []string{"gnome-terminal"}},
-	{"konsole", "Konsole", "terminal", []string{"konsole"}},
-	{"xfce4-terminal", "Xfce Terminal", "terminal", []string{"xfce4-terminal"}},
-	{"tilix", "Tilix", "terminal", []string{"tilix"}},
-	{"xterm", "xterm", "terminal", []string{"xterm"}},
+	{"ghostty", "Ghostty", "terminal", []string{"ghostty"}, ""},
+	{"kitty", "kitty", "terminal", []string{"kitty"}, ""},
+	{"alacritty", "Alacritty", "terminal", []string{"alacritty"}, ""},
+	{"wezterm", "WezTerm", "terminal", []string{"wezterm"}, ""},
+	{"gnome-terminal", "GNOME Terminal", "terminal", []string{"gnome-terminal"}, ""},
+	{"konsole", "Konsole", "terminal", []string{"konsole"}, ""},
+	{"xfce4-terminal", "Xfce Terminal", "terminal", []string{"xfce4-terminal"}, ""},
+	{"tilix", "Tilix", "terminal", []string{"tilix"}, ""},
+	{"xterm", "xterm", "terminal", []string{"xterm"}, ""},
 }
 
 // macOS-specific candidates.
 var darwinOpenerCandidates = []openerCandidate{
 	// File manager is always Finder on macOS — use "open" command
-	{"finder", "Finder", "files", []string{"open"}},
+	{"finder", "Finder", "files", []string{"open"}, ""},
 
 	// Editors
-	{"cursor", "Cursor", "editor", []string{"cursor"}},
-	{"vscode", "VS Code", "editor", []string{"code"}},
-	{"zed", "Zed", "editor", []string{"zed"}},
-	{"xcode", "Xcode", "editor", []string{"xed"}},
-	{"sublime", "Sublime Text", "editor", []string{"subl"}},
-	{"vim", "Vim", "editor", []string{"nvim", "vim"}},
+	{"cursor", "Cursor", "editor", []string{"cursor"}, ""},
+	{"vscode", "VS Code", "editor", []string{"code"}, ""},
+	{"zed", "Zed", "editor", []string{"zed"}, ""},
+	{"xcode", "Xcode", "editor", []string{"xed"}, ""},
+	{"sublime", "Sublime Text", "editor", []string{"subl"}, ""},
+	{"vim", "Vim", "editor", []string{"nvim", "vim"}, ""},
 
-	// Terminals
-	{"ghostty", "Ghostty", "terminal", []string{"ghostty"}},
-	{"iterm2", "iTerm2", "terminal", []string{"iterm2"}},
-	{"kitty", "kitty", "terminal", []string{"kitty"}},
-	{"alacritty", "Alacritty", "terminal", []string{"alacritty"}},
-	{"wezterm", "WezTerm", "terminal", []string{"wezterm"}},
-	{"terminal", "Terminal", "terminal", []string{"open"}}, // Terminal.app
+	// Terminals — iTerm2 and Terminal.app are GUI-only; detect via app bundle.
+	{"ghostty", "Ghostty", "terminal", []string{"ghostty"}, ""},
+	{"iterm2", "iTerm2", "terminal", nil, "/Applications/iTerm.app"},
+	{"kitty", "kitty", "terminal", []string{"kitty"}, ""},
+	{"alacritty", "Alacritty", "terminal", []string{"alacritty"}, ""},
+	{"wezterm", "WezTerm", "terminal", []string{"wezterm"}, ""},
+	{"terminal", "Terminal", "terminal", nil, "/System/Applications/Utilities/Terminal.app"},
 }
 
 // cachedOpeners stores detected openers with a TTL.
 var (
-	openerCache   []Opener
-	openerCacheMu sync.Mutex
-	openerCacheAt time.Time
+	openerCache    []Opener
+	openerCacheMu  sync.Mutex
+	openerCacheAt  time.Time
 	openerCacheTTL = 60 * time.Second
 )
 
@@ -104,6 +107,19 @@ func detectOpeners() []Opener {
 
 	var result []Opener
 	for _, c := range candidates {
+		// Try app bundle path first (macOS GUI apps).
+		if c.appPath != "" {
+			if _, err := os.Stat(c.appPath); err == nil {
+				result = append(result, Opener{
+					ID:   c.id,
+					Name: c.name,
+					Kind: c.kind,
+					Bin:  c.appPath,
+				})
+				continue
+			}
+		}
+		// Fall back to PATH-based binary detection.
 		for _, bin := range c.bins {
 			path, err := exec.LookPath(bin)
 			if err != nil {
@@ -144,7 +160,7 @@ func (s *Server) handleOpenSession(
 	w http.ResponseWriter, r *http.Request,
 ) {
 	sessionID := r.PathValue("id")
-	session, err := s.db.GetSession(r.Context(), sessionID)
+	session, err := s.db.GetSessionFull(r.Context(), sessionID)
 	if err != nil {
 		if handleContextError(w, err) {
 			return
