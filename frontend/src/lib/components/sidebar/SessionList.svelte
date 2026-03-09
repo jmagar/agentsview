@@ -91,7 +91,7 @@
     buildDisplayItems(groups, agentSections, groupByAgent, collapsedAgents),
   );
 
-  let totalCount = $derived(groups.length);
+  let totalCount = $derived(sessions.total);
   let totalSize = $derived(computeTotalSize(displayItems));
 
   let visibleItems = $derived.by(() => {
