@@ -445,7 +445,9 @@ func readSessionCwd(path string) string {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+	// Session files can have large JSON lines (tool results,
+	// base64 images). 2MB covers the vast majority of cases.
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
 	for i := 0; i < 20 && scanner.Scan(); i++ {
 		line := scanner.Text()
 		if cwd := gjson.Get(line, "cwd").Str; cwd != "" {
@@ -454,6 +456,9 @@ func readSessionCwd(path string) string {
 		if cwd := gjson.Get(line, "payload.cwd").Str; cwd != "" {
 			return cwd
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("readSessionCwd %s: %v", path, err)
 	}
 	return ""
 }

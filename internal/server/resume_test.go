@@ -41,14 +41,38 @@ func TestShellQuote(t *testing.T) {
 }
 
 func TestDetectTerminalLinux_NoTerminal(t *testing.T) {
-	// When no terminal is installed, should return an error.
-	// This test validates the error path — on CI or servers
-	// without a display, no terminal emulator is typically
-	// available.
+	// Empty PATH and no $TERMINAL — no terminal should be found.
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("TERMINAL", "")
 	_, _, _, err := detectTerminalLinux("echo test")
-	// We just check it doesn't panic. The error may or may not
-	// occur depending on the environment.
-	_ = err
+	if err == nil {
+		t.Error("expected error with empty PATH, got nil")
+	}
+}
+
+func TestDetectTerminalLinux_EnvTerminal(t *testing.T) {
+	// Create a fake terminal binary on PATH.
+	binDir := t.TempDir()
+	fakeBin := filepath.Join(binDir, "myterm")
+	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("TERMINAL", "myterm")
+
+	bin, args, name, err := detectTerminalLinux("echo hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bin != fakeBin {
+		t.Errorf("bin = %q, want %q", bin, fakeBin)
+	}
+	if name != "myterm" {
+		t.Errorf("name = %q, want %q", name, "myterm")
+	}
+	if len(args) == 0 {
+		t.Error("expected non-empty args")
+	}
 }
 
 func TestResolveSessionDir(t *testing.T) {
