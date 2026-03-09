@@ -357,7 +357,8 @@
     font-weight: 700;
   }
 
-  .layout-compact :global(.timestamp) {
+  .layout-compact :global(.timestamp),
+  .layout-compact :global(.group-timestamp) {
     font-size: 10px;
   }
 
