@@ -169,10 +169,6 @@ func (s *Server) handleGetSessionDir(
 		return
 	}
 	dir := resolveSessionDir(session)
-	if dir == "" {
-		writeError(w, http.StatusNotFound, "no directory found")
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"path": dir,
 	})

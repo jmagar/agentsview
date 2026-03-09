@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,7 +61,8 @@ func TestResolveSessionDir(t *testing.T) {
 	if err := os.Mkdir(cwdDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	content := `{"cwd":"` + cwdDir + `"}` + "\n"
+	cwdJSON, _ := json.Marshal(cwdDir)
+	content := `{"cwd":` + string(cwdJSON) + `}` + "\n"
 	if err := os.WriteFile(sessionFile, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
