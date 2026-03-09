@@ -46,7 +46,9 @@
     if (!session) return;
     const id = session.id;
     getSessionDirectory(id)
-      .then(({ path }) => { sessionDir = path || null; })
+      .then(({ path }) => {
+        if (session?.id === id) sessionDir = path || null;
+      })
       .catch(() => {});
   });
 
