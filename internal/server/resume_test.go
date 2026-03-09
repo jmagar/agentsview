@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/wesm/agentsview/internal/db"
@@ -41,6 +43,9 @@ func TestShellQuote(t *testing.T) {
 }
 
 func TestDetectTerminalLinux_NoTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux-only terminal detection")
+	}
 	// Empty PATH and no $TERMINAL — no terminal should be found.
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("TERMINAL", "")
@@ -51,6 +56,9 @@ func TestDetectTerminalLinux_NoTerminal(t *testing.T) {
 }
 
 func TestDetectTerminalLinux_EnvTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux-only terminal detection")
+	}
 	// Create a fake terminal binary on PATH.
 	binDir := t.TempDir()
 	fakeBin := filepath.Join(binDir, "myterm")
@@ -72,6 +80,60 @@ func TestDetectTerminalLinux_EnvTerminal(t *testing.T) {
 	}
 	if len(args) == 0 {
 		t.Error("expected non-empty args")
+	}
+}
+
+func TestDetectTerminalLinux_EnvTerminalWithArgs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux-only terminal detection")
+	}
+	binDir := t.TempDir()
+	fakeBin := filepath.Join(binDir, "kitty")
+	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("TERMINAL", "kitty --single-instance")
+
+	bin, args, name, err := detectTerminalLinux("echo hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bin != fakeBin {
+		t.Errorf("bin = %q, want %q", bin, fakeBin)
+	}
+	if name != "kitty" {
+		t.Errorf("name = %q, want %q", name, "kitty")
+	}
+	// Should have --single-instance prepended before template args.
+	if len(args) < 2 || args[0] != "--single-instance" {
+		t.Errorf("args = %v, want --single-instance as first arg", args)
+	}
+}
+
+func TestReadSessionCwd_LargeLine(t *testing.T) {
+	// Verify that readSessionCwd handles lines larger than the
+	// old 2MB scanner limit without losing the cwd field.
+	dir := t.TempDir()
+	cwdDir := filepath.Join(dir, "project")
+	if err := os.Mkdir(cwdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cwdJSON, _ := json.Marshal(cwdDir)
+	// Build a 3MB padding string to exceed the old scanner limit.
+	padding := strings.Repeat("x", 3*1024*1024)
+	line := `{"cwd":` + string(cwdJSON) +
+		`,"big":"` + padding + `"}` + "\n"
+
+	sessionFile := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(sessionFile, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readSessionCwd(sessionFile)
+	if got != cwdDir {
+		t.Errorf("readSessionCwd() = %q, want %q", got, cwdDir)
 	}
 }
 

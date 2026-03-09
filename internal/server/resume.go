@@ -444,21 +444,21 @@ func readSessionCwd(path string) string {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	// Session files can have large JSON lines (tool results,
-	// base64 images). 2MB covers the vast majority of cases.
-	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
-	for i := 0; i < 20 && scanner.Scan(); i++ {
-		line := scanner.Text()
-		if cwd := gjson.Get(line, "cwd").Str; cwd != "" {
-			return cwd
+	reader := bufio.NewReader(f)
+	for range 20 {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			s := string(line)
+			if cwd := gjson.Get(s, "cwd").Str; cwd != "" {
+				return cwd
+			}
+			if cwd := gjson.Get(s, "payload.cwd").Str; cwd != "" {
+				return cwd
+			}
 		}
-		if cwd := gjson.Get(line, "payload.cwd").Str; cwd != "" {
-			return cwd
+		if err != nil {
+			break
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		log.Printf("readSessionCwd %s: %v", path, err)
 	}
 	return ""
 }
@@ -488,14 +488,22 @@ func isDir(path string) bool {
 }
 
 func detectTerminalLinux(cmd string) (string, []string, string, error) {
-	// Check $TERMINAL env var first. If it resolves, build args
-	// using the per-terminal template when the basename matches a
-	// known candidate, otherwise use a generic pattern.
+	// Check $TERMINAL env var first. The value may contain
+	// arguments (e.g. "kitty --single-instance"), so split it
+	// with a shell lexer and use the first token for LookPath.
 	if envTerm := os.Getenv("TERMINAL"); envTerm != "" {
-		if path, err := exec.LookPath(envTerm); err == nil {
-			base := filepath.Base(envTerm)
-			args := buildTerminalArgs(base, cmd)
-			return path, args, base, nil
+		parts, splitErr := shlex.Split(envTerm)
+		if splitErr == nil && len(parts) > 0 {
+			if path, err := exec.LookPath(parts[0]); err == nil {
+				base := filepath.Base(parts[0])
+				args := buildTerminalArgs(base, cmd)
+				// Prepend extra tokens from $TERMINAL before
+				// the template args (e.g. --single-instance).
+				if len(parts) > 1 {
+					args = append(parts[1:], args...)
+				}
+				return path, args, base, nil
+			}
 		}
 	}
 
