@@ -520,7 +520,7 @@
 
   .open-btn:hover {
     color: var(--text-secondary);
-    background: var(--bg-hover);
+    background: var(--bg-surface-hover);
   }
 
   .open-btn.has-feedback {
@@ -555,7 +555,7 @@
   }
 
   .open-menu-item:hover {
-    background: var(--bg-hover);
+    background: var(--bg-surface-hover);
   }
 
   .open-menu-num {
@@ -611,7 +611,7 @@
 
   .session-id:hover {
     color: var(--text-secondary);
-    background: var(--bg-hover);
+    background: var(--bg-surface-hover);
   }
 
   .actions-wrapper {
