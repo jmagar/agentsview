@@ -336,6 +336,7 @@ export interface ResumeRequest {
   skip_permissions?: boolean;
   fork_session?: boolean;
   command_only?: boolean;
+  opener_id?: string;
 }
 
 export interface ResumeResponse {

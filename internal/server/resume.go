@@ -23,9 +23,10 @@ import (
 
 // resumeRequest is the JSON body for POST /api/v1/sessions/{id}/resume.
 type resumeRequest struct {
-	SkipPermissions bool `json:"skip_permissions"`
-	ForkSession     bool `json:"fork_session"`
-	CommandOnly     bool `json:"command_only"`
+	SkipPermissions bool   `json:"skip_permissions"`
+	ForkSession     bool   `json:"fork_session"`
+	CommandOnly     bool   `json:"command_only"`
+	OpenerID        string `json:"opener_id"`
 }
 
 // resumeResponse is the JSON response for a resume request.
@@ -139,6 +140,51 @@ func (s *Server) handleResumeSession(
 	if req.CommandOnly {
 		writeJSON(w, http.StatusOK, resumeResponse{
 			Launched: false,
+			Command:  cmd,
+			Cwd:      sessionDir,
+		})
+		return
+	}
+
+	// If the caller specified a terminal opener, use it directly.
+	if req.OpenerID != "" {
+		openers := detectOpeners()
+		var opener *Opener
+		for i := range openers {
+			if openers[i].ID == req.OpenerID {
+				opener = &openers[i]
+				break
+			}
+		}
+		if opener == nil {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("opener %q not found", req.OpenerID))
+			return
+		}
+		proc := launchResumeInOpener(*opener, cmd, sessionDir)
+		if proc == nil {
+			writeJSON(w, http.StatusOK, resumeResponse{
+				Launched: false,
+				Command:  cmd,
+				Cwd:      sessionDir,
+				Error:    "unsupported_opener",
+			})
+			return
+		}
+		if err := proc.Start(); err != nil {
+			log.Printf("resume: opener start failed: %v", err)
+			writeJSON(w, http.StatusOK, resumeResponse{
+				Launched: false,
+				Command:  cmd,
+				Cwd:      sessionDir,
+				Error:    "terminal_launch_failed",
+			})
+			return
+		}
+		go func() { _ = proc.Wait() }()
+		writeJSON(w, http.StatusOK, resumeResponse{
+			Launched: true,
+			Terminal: opener.Name,
 			Command:  cmd,
 			Cwd:      sessionDir,
 		})
@@ -487,5 +533,101 @@ func buildTerminalArgs(bin, cmd string) []string {
 		return []string{"-e", "bash", "-c", cmd + "; exec bash"}
 	default:
 		return []string{"-e", "bash", "-c", cmd + "; exec bash"}
+	}
+}
+
+// launchResumeInOpener builds an exec.Cmd that runs a shell command
+// inside the terminal identified by the opener. Returns nil if the
+// opener kind is not "terminal" or the terminal is not supported.
+func launchResumeInOpener(
+	o Opener, cmd string, cwd string,
+) *exec.Cmd {
+	if o.Kind != "terminal" {
+		return nil
+	}
+
+	if runtime.GOOS == "darwin" {
+		return launchResumeDarwin(o, cmd, cwd)
+	}
+
+	// Linux: launch via CLI binary with per-terminal arg patterns.
+	// Wrap the resume command so the shell stays open after it exits.
+	args := buildTerminalArgs(o.ID, cmd+"; exec bash")
+	proc := exec.Command(o.Bin, args...)
+	if cwd != "" {
+		proc.Dir = cwd
+	}
+	proc.Stdout = nil
+	proc.Stderr = nil
+	proc.Stdin = nil
+	return proc
+}
+
+// launchResumeDarwin launches a resume command in a macOS terminal
+// app. Uses AppleScript for iTerm2/Terminal.app and `open -na` with
+// appropriate flags for others.
+func launchResumeDarwin(
+	o Opener, cmd string, cwd string,
+) *exec.Cmd {
+	// For AppleScript-based terminals, build a single shell command
+	// that cd's and then runs the resume command.
+	shellCmd := cmd
+	if cwd != "" {
+		shellCmd = fmt.Sprintf(
+			"cd %s && %s", shellQuote(cwd), cmd,
+		)
+	}
+	safe := escapeForAppleScript(shellCmd)
+
+	switch o.ID {
+	case "iterm2":
+		script := fmt.Sprintf(
+			`tell application "iTerm"
+				create window with default profile command "%s"
+			end tell`, safe,
+		)
+		return exec.Command("osascript", "-e", script)
+	case "terminal":
+		script := fmt.Sprintf(
+			`tell application "Terminal"
+				activate
+				do script "%s"
+			end tell`, safe,
+		)
+		return exec.Command("osascript", "-e", script)
+	case "ghostty":
+		args := []string{"-na", "Ghostty", "--args"}
+		if cwd != "" {
+			args = append(args, "--working-directory="+cwd)
+		}
+		args = append(args, "-e", "bash", "-c",
+			cmd+"; exec bash")
+		return exec.Command("open", args...)
+	case "kitty":
+		args := []string{"-na", "kitty", "--args"}
+		if cwd != "" {
+			args = append(args, "-d", cwd)
+		}
+		args = append(args, "bash", "-c", cmd+"; exec bash")
+		return exec.Command("open", args...)
+	case "alacritty":
+		args := []string{"-na", "Alacritty", "--args"}
+		if cwd != "" {
+			args = append(args, "--working-directory", cwd)
+		}
+		args = append(args, "-e", "bash", "-c",
+			cmd+"; exec bash")
+		return exec.Command("open", args...)
+	case "wezterm":
+		args := []string{"-na", "WezTerm", "--args",
+			"start"}
+		if cwd != "" {
+			args = append(args, "--cwd", cwd)
+		}
+		args = append(args, "--", "bash", "-c",
+			cmd+"; exec bash")
+		return exec.Command("open", args...)
+	default:
+		return nil
 	}
 }
