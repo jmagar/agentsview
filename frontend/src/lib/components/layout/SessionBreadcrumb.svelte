@@ -3,6 +3,7 @@
   import type { Session } from "../../api/types.js";
   import {
     resumeSession,
+    openSession,
     listOpeners,
     type Opener,
   } from "../../api/client.js";
@@ -155,12 +156,54 @@
     }
   }
 
+  async function handleCopyFilePath() {
+    if (!session) return;
+    showOpenMenu = false;
+    try {
+      const resp = await resumeSession(
+        session.id, { command_only: true },
+      );
+      if (resp.cwd) {
+        const ok = await copyToClipboard(resp.cwd);
+        showFeedback(ok ? "Path copied!" : "Failed");
+        return;
+      }
+    } catch {
+      // Fall back to session project field.
+    }
+    if (session.project?.startsWith("/")) {
+      const ok = await copyToClipboard(session.project);
+      showFeedback(ok ? "Path copied!" : "Failed");
+    } else {
+      showFeedback("No path available");
+    }
+  }
+
+  async function handleOpenIn(opener: Opener) {
+    if (!session) return;
+    showOpenMenu = false;
+    try {
+      await openSession(session.id, opener.id);
+      showFeedback(`Opened in ${opener.name}`);
+    } catch {
+      showFeedback("Failed to open");
+    }
+  }
+
   const canResume = $derived(
     session ? supportsResume(session.agent) : false,
   );
 
   const terminalOpeners = $derived(
     openers.filter((o) => o.kind === "terminal"),
+  );
+
+  const editorOpeners = $derived(
+    openers.filter((o) => o.kind === "editor"),
+  );
+
+  const fileOpeners = $derived(
+    openers.filter((o) => o.kind === "files"),
   );
 
   function handleKeydown(e: KeyboardEvent) {
@@ -182,7 +225,7 @@
         const idx = num - 1;
         if (idx < terminalOpeners.length) {
           e.preventDefault();
-          handleResumeIn(terminalOpeners[idx]);
+          handleResumeIn(terminalOpeners[idx]!);
         }
       }
     }
@@ -296,8 +339,47 @@
                 </span>
                 <span class="open-menu-name">Copy command</span>
               </button>
+              <button class="open-menu-item" onclick={handleCopyFilePath}>
+                <span class="open-menu-num">
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                    <path fill-rule="evenodd" d="M3.75 1.5a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 00.25-.25V6H9.75A1.75 1.75 0 018 4.25V1.5H3.75zm5.75.56v2.19c0 .138.112.25.25.25h2.19L9.5 2.06zM2 1.75C2 .784 2.784 0 3.75 0h5.086c.464 0 .909.184 1.237.513l3.414 3.414c.329.328.513.773.513 1.237v9.086A1.75 1.75 0 0112.25 16h-8.5A1.75 1.75 0 012 14.25V1.75z"/>
+                  </svg>
+                </span>
+                <span class="open-menu-name">Copy file path</span>
+              </button>
               {#if terminalOpeners.length === 0}
                 <div class="open-menu-empty">No terminals detected</div>
+              {/if}
+              {#if editorOpeners.length > 0 || fileOpeners.length > 0}
+                <div class="open-menu-divider"></div>
+                <div class="open-menu-section">Open in</div>
+                {#each editorOpeners as opener (opener.id)}
+                  <button
+                    class="open-menu-item"
+                    onclick={() => handleOpenIn(opener)}
+                  >
+                    <span class="open-menu-num">
+                      <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M4.708 5.578L2.061 8.224l2.647 2.646-.708.708L.94 8.578V7.87L4 4.87l.708.708zm7.292 0l2.647 2.646-2.647 2.646.708.708L15.768 8.578V7.87L12.708 4.87 12 5.578z"/>
+                        <path d="M5.708 13.578L9.258 2.578l.984.344-3.55 11-.984-.344z"/>
+                      </svg>
+                    </span>
+                    <span class="open-menu-name">{opener.name}</span>
+                  </button>
+                {/each}
+                {#each fileOpeners as opener (opener.id)}
+                  <button
+                    class="open-menu-item"
+                    onclick={() => handleOpenIn(opener)}
+                  >
+                    <span class="open-menu-num">
+                      <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/>
+                      </svg>
+                    </span>
+                    <span class="open-menu-name">{opener.name}</span>
+                  </button>
+                {/each}
               {/if}
             </div>
           {/if}
@@ -519,6 +601,15 @@
     height: 1px;
     background: var(--border-muted);
     margin: 4px 0;
+  }
+
+  .open-menu-section {
+    padding: 4px 10px 2px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   .open-menu-empty {
