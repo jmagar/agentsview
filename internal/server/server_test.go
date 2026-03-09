@@ -579,6 +579,10 @@ type uploadResponse struct {
 	Messages  int    `json:"messages"`
 }
 
+type machineListResponse struct {
+	Machines []string `json:"machines"`
+}
+
 type syncResultResponse struct {
 	TotalSessions int `json:"total_sessions"`
 	Synced        int `json:"synced"`
@@ -1197,6 +1201,78 @@ func TestGetStats(t *testing.T) {
 	if resp.MessageCount != 5 {
 		t.Fatalf("expected 5 messages, got %d",
 			resp.MessageCount)
+	}
+}
+
+func TestGetStats_ExcludeOneShotDefault(t *testing.T) {
+	te := setup(t)
+	te.seedSession(t, "s1", "my-app", 5, func(s *db.Session) {
+		s.UserMessageCount = 1
+	})
+	te.seedSession(t, "s2", "my-app", 10, func(s *db.Session) {
+		s.UserMessageCount = 5
+	})
+	te.seedMessages(t, "s1", 5)
+	te.seedMessages(t, "s2", 10)
+
+	// Default: exclude one-shot sessions.
+	w := te.get(t, "/api/v1/stats")
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[db.Stats](t, w)
+	if resp.SessionCount != 1 {
+		t.Errorf("default: session_count = %d, want 1",
+			resp.SessionCount)
+	}
+	if resp.MessageCount != 10 {
+		t.Errorf("default: message_count = %d, want 10",
+			resp.MessageCount)
+	}
+
+	// Explicit include: all sessions.
+	w = te.get(t, "/api/v1/stats?include_one_shot=true")
+	assertStatus(t, w, http.StatusOK)
+	resp = decode[db.Stats](t, w)
+	if resp.SessionCount != 2 {
+		t.Errorf("include: session_count = %d, want 2",
+			resp.SessionCount)
+	}
+	if resp.MessageCount != 15 {
+		t.Errorf("include: message_count = %d, want 15",
+			resp.MessageCount)
+	}
+}
+
+func TestListMachines_ExcludeOneShotDefault(t *testing.T) {
+	te := setup(t)
+	te.seedSession(t, "s1", "my-app", 5, func(s *db.Session) {
+		s.Machine = "laptop"
+		s.UserMessageCount = 1
+	})
+	te.seedSession(t, "s2", "my-app", 10, func(s *db.Session) {
+		s.Machine = "desktop"
+		s.UserMessageCount = 5
+	})
+
+	// Default: exclude one-shot sessions.
+	w := te.get(t, "/api/v1/machines")
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[machineListResponse](t, w)
+	if len(resp.Machines) != 1 {
+		t.Fatalf("default: expected 1 machine, got %d",
+			len(resp.Machines))
+	}
+	if resp.Machines[0] != "desktop" {
+		t.Errorf("default: expected desktop, got %s",
+			resp.Machines[0])
+	}
+
+	// Explicit include: all machines.
+	w = te.get(t, "/api/v1/machines?include_one_shot=true")
+	assertStatus(t, w, http.StatusOK)
+	resp = decode[machineListResponse](t, w)
+	if len(resp.Machines) != 2 {
+		t.Fatalf("include: expected 2 machines, got %d",
+			len(resp.Machines))
 	}
 }
 

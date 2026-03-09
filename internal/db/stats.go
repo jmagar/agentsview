@@ -54,8 +54,8 @@ func (db *DB) GetStats(
 		SELECT
 			(SELECT COUNT(*) FROM sessions
 			 WHERE %s),
-			(SELECT value FROM stats
-			 WHERE key = 'message_count'),
+			(SELECT COALESCE(SUM(message_count), 0)
+			 FROM sessions WHERE %s),
 			(SELECT COUNT(DISTINCT project) FROM sessions
 			 WHERE %s),
 			(SELECT COUNT(DISTINCT machine) FROM sessions
@@ -64,7 +64,7 @@ func (db *DB) GetStats(
 				NULLIF(started_at, ''), created_at
 			 )) FROM sessions
 			 WHERE %s)`,
-		filter, filter, filter, filter)
+		filter, filter, filter, filter, filter)
 
 	var s Stats
 	err := db.getReader().QueryRowContext(ctx, query).Scan(

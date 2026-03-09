@@ -42,6 +42,7 @@ class SyncStore {
     null;
   private lastStatsParams: { include_one_shot?: boolean } =
     {};
+  private statsVersion = 0;
 
   async loadStatus() {
     try {
@@ -78,8 +79,14 @@ class SyncStore {
     if (params !== undefined) {
       this.lastStatsParams = params;
     }
+    const version = ++this.statsVersion;
     try {
-      this.stats = await api.getStats(this.lastStatsParams);
+      const result = await api.getStats(
+        this.lastStatsParams,
+      );
+      if (this.statsVersion === version) {
+        this.stats = result;
+      }
     } catch (error) {
       console.warn("Failed to load sync stats:", error);
     }

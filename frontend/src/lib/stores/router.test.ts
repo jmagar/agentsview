@@ -112,6 +112,34 @@ describe("RouterStore", () => {
     removeSpy.mockRestore();
   });
 
+  it("navigate returns true on hash change", () => {
+    window.location.hash = "";
+    store = new RouterStore();
+    const result = store.navigate("sessions", {
+      project: "foo",
+    });
+    expect(result).toBe(true);
+    expect(store.route).toBe("sessions");
+    expect(store.params).toEqual({ project: "foo" });
+  });
+
+  it("navigate returns false on same hash (no-op)", () => {
+    window.location.hash = "#/sessions";
+    store = new RouterStore();
+    const result = store.navigate("sessions");
+    expect(result).toBe(false);
+  });
+
+  it("navigate returns false when params match", () => {
+    window.location.hash =
+      "#/sessions?include_one_shot=true";
+    store = new RouterStore();
+    const result = store.navigate("sessions", {
+      include_one_shot: "true",
+    });
+    expect(result).toBe(false);
+  });
+
   it("does not accumulate listeners across instances", () => {
     const addSpy = vi.spyOn(window, "addEventListener");
     const removeSpy = vi.spyOn(

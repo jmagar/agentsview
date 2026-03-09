@@ -91,7 +91,11 @@
     buildDisplayItems(groups, agentSections, groupByAgent, collapsedAgents),
   );
 
-  let totalCount = $derived(sessions.total);
+  let totalCount = $derived(
+    starred.filterOnly
+      ? groups.reduce((n, g) => n + g.sessions.length, 0)
+      : sessions.total,
+  );
   let totalSize = $derived(computeTotalSize(displayItems));
 
   let visibleItems = $derived.by(() => {

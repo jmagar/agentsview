@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"testing"
 )
 
@@ -341,5 +342,80 @@ func TestSessionFilterExcludeOneShot(t *testing.T) {
 			}
 			requireSessions(t, d, f, tt.want)
 		})
+	}
+}
+
+func TestGetMachinesExcludeOneShot(t *testing.T) {
+	d := testDB(t)
+
+	insertSession(t, d, "s1", "proj", func(s *Session) {
+		s.Machine = "laptop"
+		s.UserMessageCount = 1
+	})
+	insertSession(t, d, "s2", "proj", func(s *Session) {
+		s.Machine = "desktop"
+		s.UserMessageCount = 5
+	})
+
+	all, err := d.GetMachines(context.Background(), false)
+	requireNoError(t, err, "GetMachines includeAll")
+	if len(all) != 2 {
+		t.Fatalf("includeAll: got %d machines, want 2", len(all))
+	}
+
+	filtered, err := d.GetMachines(context.Background(), true)
+	requireNoError(t, err, "GetMachines excludeOneShot")
+	if len(filtered) != 1 {
+		t.Fatalf("excludeOneShot: got %d machines, want 1",
+			len(filtered))
+	}
+	if filtered[0] != "desktop" {
+		t.Errorf("excludeOneShot: got %q, want desktop",
+			filtered[0])
+	}
+}
+
+func TestGetStatsExcludeOneShot(t *testing.T) {
+	d := testDB(t)
+
+	insertSession(t, d, "s1", "proj1", func(s *Session) {
+		s.MessageCount = 5
+		s.UserMessageCount = 1
+	})
+	insertSession(t, d, "s2", "proj2", func(s *Session) {
+		s.MessageCount = 10
+		s.UserMessageCount = 5
+	})
+
+	// Include all.
+	stats, err := d.GetStats(context.Background(), false)
+	requireNoError(t, err, "GetStats includeAll")
+	if stats.SessionCount != 2 {
+		t.Errorf("includeAll: session_count = %d, want 2",
+			stats.SessionCount)
+	}
+	if stats.MessageCount != 15 {
+		t.Errorf("includeAll: message_count = %d, want 15",
+			stats.MessageCount)
+	}
+	if stats.ProjectCount != 2 {
+		t.Errorf("includeAll: project_count = %d, want 2",
+			stats.ProjectCount)
+	}
+
+	// Exclude one-shot.
+	stats, err = d.GetStats(context.Background(), true)
+	requireNoError(t, err, "GetStats excludeOneShot")
+	if stats.SessionCount != 1 {
+		t.Errorf("excludeOneShot: session_count = %d, want 1",
+			stats.SessionCount)
+	}
+	if stats.MessageCount != 10 {
+		t.Errorf("excludeOneShot: message_count = %d, want 10",
+			stats.MessageCount)
+	}
+	if stats.ProjectCount != 1 {
+		t.Errorf("excludeOneShot: project_count = %d, want 1",
+			stats.ProjectCount)
 	}
 }
