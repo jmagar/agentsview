@@ -21,8 +21,8 @@
     if (analytics.includeOneShot) {
       params["include_one_shot"] = "true";
     }
+    sessions.pendingNavTarget = id;
     router.navigate("sessions", params);
-    sessions.selectSession(id);
   }
 </script>
 
