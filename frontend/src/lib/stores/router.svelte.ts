@@ -69,14 +69,18 @@ export class RouterStore {
     );
   }
 
-  navigate(route: Route, params: Record<string, string> = {}) {
+  navigate(
+    route: Route,
+    params: Record<string, string> = {},
+  ): boolean {
     const qs = new URLSearchParams(params).toString();
     const hash = qs ? `#/${route}?${qs}` : `#/${route}`;
-    if (hash === window.location.hash) return;
+    if (hash === window.location.hash) return false;
     this.route = route;
     this.params = params;
     this.#lastHash = hash;
     window.location.hash = hash;
+    return true;
   }
 }
 

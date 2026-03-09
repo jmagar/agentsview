@@ -22,7 +22,10 @@
       params["include_one_shot"] = "true";
     }
     sessions.pendingNavTarget = id;
-    router.navigate("sessions", params);
+    if (!router.navigate("sessions", params)) {
+      sessions.pendingNavTarget = null;
+      sessions.selectSession(id);
+    }
   }
 </script>
 

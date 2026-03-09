@@ -3898,7 +3898,7 @@ func TestMetadataQueriesExcludeTrashed(t *testing.T) {
 		t.Fatalf("agents before trash: got %d, want 2", len(agents))
 	}
 
-	machines, err := d.GetMachines(ctx)
+	machines, err := d.GetMachines(ctx, false)
 	requireNoError(t, err, "GetMachines before trash")
 	if len(machines) != 2 {
 		t.Fatalf("machines before trash: got %d, want 2", len(machines))
@@ -3925,7 +3925,7 @@ func TestMetadataQueriesExcludeTrashed(t *testing.T) {
 		t.Errorf("agent name: got %q, want %q", agents[0].Name, "claude")
 	}
 
-	machines, err = d.GetMachines(ctx)
+	machines, err = d.GetMachines(ctx, false)
 	requireNoError(t, err, "GetMachines after trash")
 	if len(machines) != 1 {
 		t.Errorf("machines after trash: got %d, want 1", len(machines))

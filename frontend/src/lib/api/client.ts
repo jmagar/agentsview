@@ -159,8 +159,10 @@ export function getProjects(
   return fetchJSON(`/projects${buildQuery({ ...params })}`);
 }
 
-export function getMachines(): Promise<MachinesResponse> {
-  return fetchJSON("/machines");
+export function getMachines(
+  params: { include_one_shot?: boolean } = {},
+): Promise<MachinesResponse> {
+  return fetchJSON(`/machines${buildQuery({ ...params })}`);
 }
 
 export function getAgents(

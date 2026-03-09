@@ -682,11 +682,14 @@ type AgentInfo struct {
 
 // GetMachines returns distinct machine names.
 func (db *DB) GetMachines(
-	ctx context.Context,
+	ctx context.Context, excludeOneShot bool,
 ) ([]string, error) {
-	rows, err := db.getReader().QueryContext(ctx,
-		"SELECT DISTINCT machine FROM sessions WHERE deleted_at IS NULL ORDER BY machine",
-	)
+	q := "SELECT DISTINCT machine FROM sessions WHERE deleted_at IS NULL"
+	if excludeOneShot {
+		q += " AND user_message_count > 1"
+	}
+	q += " ORDER BY machine"
+	rows, err := db.getReader().QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}

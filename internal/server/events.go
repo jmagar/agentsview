@@ -242,7 +242,8 @@ func (s *Server) handleListProjects(
 func (s *Server) handleListMachines(
 	w http.ResponseWriter, r *http.Request,
 ) {
-	machines, err := s.db.GetMachines(r.Context())
+	excludeOneShot := r.URL.Query().Get("include_one_shot") != "true"
+	machines, err := s.db.GetMachines(r.Context(), excludeOneShot)
 	if err != nil {
 		if handleContextError(w, err) {
 			return
