@@ -53,6 +53,7 @@ class SyncStore {
   private statsVersion = 0;
   private syncCompleteListeners: SyncCompleteListener[] = [];
   private statusHydrated = false;
+  private pendingHydration = false;
 
   /** Register a callback invoked after any sync completes. */
   onSyncComplete(listener: SyncCompleteListener) {
@@ -65,8 +66,7 @@ class SyncStore {
     }
   }
 
-  async loadStatus(opts?: { notify?: boolean }) {
-    const notify = opts?.notify ?? true;
+  async loadStatus() {
     try {
       const status = await api.getSyncStatus();
       const newLastSync = status.last_sync || null;
@@ -76,11 +76,16 @@ class SyncStore {
         newLastSync !== null && newLastSync !== this.lastSync;
       this.lastSync = newLastSync;
       this.lastSyncStats = status.stats;
-      if (changed && !isInitial && notify) {
+      // Suppress notifications on initial hydration and
+      // when a local sync just completed (pendingHydration).
+      if (this.pendingHydration) {
+        this.pendingHydration = false;
+      } else if (changed && !isInitial) {
         this.loadStats();
         this.notifySyncComplete();
       }
     } catch (error) {
+      this.pendingHydration = false;
       console.warn("Failed to load sync status:", error);
     }
   }
@@ -184,17 +189,14 @@ class SyncStore {
     handle.done
       .then((s: SyncStats) => {
         this.lastSyncStats = s;
-        // Set lastSync to second-precision ISO format
-        // matching the server's RFC3339 output, so the
-        // next poll won't see a format mismatch.
-        const now = new Date();
-        now.setMilliseconds(0);
-        this.lastSync = now.toISOString().replace(".000Z", "Z");
         this.loadStats();
         finalizeSync();
         this.notifySyncComplete();
         // Hydrate the authoritative server timestamp.
-        this.loadStatus({ notify: false });
+        // pendingHydration suppresses the notification so
+        // the poll path won't double-fire.
+        this.pendingHydration = true;
+        this.loadStatus();
         onComplete?.();
       })
       .catch((err: unknown) => {
