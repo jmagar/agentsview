@@ -220,7 +220,11 @@
   let prevRevealedId: string | null = null;
   $effect(() => {
     const activeId = sessions.activeSessionId;
-    if (!activeId || activeId === prevRevealedId) return;
+    if (!activeId) {
+      prevRevealedId = null;
+      return;
+    }
+    if (activeId === prevRevealedId) return;
     if (!containerRef) return;
     // Read displayItems inside the effect so Svelte tracks
     // it — needed to re-run after a group expansion.
