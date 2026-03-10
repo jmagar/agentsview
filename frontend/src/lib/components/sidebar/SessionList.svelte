@@ -212,6 +212,27 @@
     });
   }
 
+  // Scroll to the active session when it changes (e.g. from
+  // the command palette). Skips if already visible.
+  $effect(() => {
+    const activeId = sessions.activeSessionId;
+    if (!activeId || !containerRef) return;
+    const item = displayItems.find(
+      (it) =>
+        it.type === "session" &&
+        it.group?.sessions.some((s) => s.id === activeId),
+    );
+    if (!item) return;
+    const itemBottom = item.top + item.height;
+    const viewTop = containerRef.scrollTop;
+    const viewBottom = viewTop + containerRef.clientHeight;
+    if (item.top >= viewTop && itemBottom <= viewBottom) return;
+    containerRef.scrollTop = Math.max(
+      0,
+      item.top - containerRef.clientHeight / 2 + item.height / 2,
+    );
+  });
+
   onDestroy(() => {
     if (scrollRaf !== null) {
       cancelAnimationFrame(scrollRaf);
