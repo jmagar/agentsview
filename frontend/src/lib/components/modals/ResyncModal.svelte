@@ -12,6 +12,7 @@
     const started = sync.triggerResync(
       () => {
         view = "done";
+        sessions.invalidateFilterCaches();
         sessions.load();
       },
       (err) => {

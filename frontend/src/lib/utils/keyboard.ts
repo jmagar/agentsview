@@ -87,7 +87,11 @@ export function registerShortcuts(
       },
       o: () => ui.toggleSort(),
       l: () => ui.cycleLayout(),
-      r: () => sync.triggerSync(() => sessions.load()),
+      r: () =>
+        sync.triggerSync(() => {
+          sessions.invalidateFilterCaches();
+          sessions.load();
+        }),
       e: () => {
         if (sessions.activeSessionId) {
           window.open(
