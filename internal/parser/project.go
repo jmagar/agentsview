@@ -211,11 +211,17 @@ func findGitRepoRoot(cwd string) string {
 	}
 }
 
-// repoRootFromSiblings checks sibling directories of dir for
-// linked-worktree .git files and uses them to discover the true
-// repo root. Submodule .git files (pointing to .git/modules/)
-// are ignored to avoid misattributing the project.
+// repoRootFromSiblings checks child directories of dir for
+// linked-worktree .git files and uses them to discover the
+// true repo root. Submodule .git files are skipped, and all
+// candidates must agree on the same root to avoid
+// misattributing unrelated paths.
 func repoRootFromSiblings(dir string) string {
+	// If dir is itself a repo or worktree, let the normal
+	// upward walk handle it.
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		return ""
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
@@ -223,6 +229,7 @@ func repoRootFromSiblings(dir string) string {
 	worktreeMarker := string(filepath.Separator) + ".git" +
 		string(filepath.Separator) + "worktrees" +
 		string(filepath.Separator)
+	var found string
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -232,7 +239,6 @@ func repoRootFromSiblings(dir string) string {
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		// Resolve the gitdir and only accept linked worktrees.
 		gitDir := readGitDirFromFile(gitPath)
 		if gitDir == "" {
 			continue
@@ -244,13 +250,21 @@ func repoRootFromSiblings(dir string) string {
 		if !strings.Contains(gitDir, worktreeMarker) {
 			continue
 		}
-		if root := repoRootFromGitFile(
+		root := repoRootFromGitFile(
 			filepath.Join(dir, entry.Name()), gitPath,
-		); root != "" {
-			return root
+		)
+		if root == "" {
+			continue
+		}
+		if found == "" {
+			found = root
+		} else if found != root {
+			// Siblings disagree — not a single-project
+			// container, so bail out.
+			return ""
 		}
 	}
-	return ""
+	return found
 }
 
 func repoRootFromGitFile(repoDir, gitFilePath string) string {

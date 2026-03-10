@@ -221,6 +221,79 @@ func TestExtractProjectFromCwd_SubmoduleSiblingIgnored(
 	}
 }
 
+func TestExtractProjectFromCwd_UnrelatedSiblingWorktree(
+	t *testing.T,
+) {
+	// When sibling worktrees belong to different repos, sibling
+	// detection must bail out to avoid misattributing the path.
+	root := t.TempDir()
+
+	repoA := filepath.Join(root, "repo-a")
+	mustMkdirAll(t, filepath.Join(
+		repoA, ".git", "worktrees", "feature-a",
+	))
+	repoB := filepath.Join(root, "repo-b")
+	mustMkdirAll(t, filepath.Join(
+		repoB, ".git", "worktrees", "feature-b",
+	))
+
+	container := filepath.Join(root, "mixed")
+	sibA := filepath.Join(container, "feature-a")
+	sibB := filepath.Join(container, "feature-b")
+	mustMkdirAll(t, sibA)
+	mustMkdirAll(t, sibB)
+
+	gitDirA := filepath.Join(
+		repoA, ".git", "worktrees", "feature-a",
+	)
+	mustWriteFile(t, filepath.Join(sibA, ".git"),
+		"gitdir: "+gitDirA+"\n")
+	mustWriteFile(t, filepath.Join(gitDirA, "commondir"),
+		"../..\n")
+
+	gitDirB := filepath.Join(
+		repoB, ".git", "worktrees", "feature-b",
+	)
+	mustWriteFile(t, filepath.Join(sibB, ".git"),
+		"gitdir: "+gitDirB+"\n")
+	mustWriteFile(t, filepath.Join(gitDirB, "commondir"),
+		"../..\n")
+
+	deleted := filepath.Join(container, "deleted-thing")
+
+	got := ExtractProjectFromCwd(deleted)
+	// Siblings disagree, falls back to basename.
+	if got != "deleted_thing" {
+		t.Fatalf(
+			"ExtractProjectFromCwd(%q) = %q, want %q",
+			deleted, got, "deleted_thing",
+		)
+	}
+}
+
+func TestExtractProjectFromCwd_AncestorHasGitDir(
+	t *testing.T,
+) {
+	// When the first existing ancestor has its own .git,
+	// sibling detection must be skipped so the normal upward
+	// walk finds it instead.
+	root := t.TempDir()
+
+	repo := filepath.Join(root, "my-repo")
+	mustMkdirAll(t, filepath.Join(repo, ".git"))
+
+	// A deleted path inside the repo.
+	deleted := filepath.Join(repo, "deleted-subdir", "file")
+
+	got := ExtractProjectFromCwd(deleted)
+	if got != "my_repo" {
+		t.Fatalf(
+			"ExtractProjectFromCwd(%q) = %q, want %q",
+			deleted, got, "my_repo",
+		)
+	}
+}
+
 func TestExtractProjectFromCwdWithBranch_NestedWorktree(
 	t *testing.T,
 ) {
