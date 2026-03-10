@@ -164,12 +164,24 @@ func findGitRepoRoot(cwd string) string {
 		dir = filepath.Dir(dir)
 	}
 
-	// When the original path is gone, check sibling directories
-	// for worktree .git files before walking up. This handles
-	// nested worktrees (e.g. worktrees/project/branch/) where
-	// the parent directory is just a container with no .git.
+	// When the original path is gone, walk up to the first
+	// existing ancestor and check its children for worktree
+	// .git files. This handles nested worktrees (e.g.
+	// worktrees/project/branch/cmd/server) where the whole
+	// subtree may be deleted.
 	if cwdMissing {
-		if root := repoRootFromSiblings(dir); root != "" {
+		sibDir := dir
+		for {
+			if _, err := os.Stat(sibDir); err == nil {
+				break
+			}
+			parent := filepath.Dir(sibDir)
+			if parent == sibDir {
+				break
+			}
+			sibDir = parent
+		}
+		if root := repoRootFromSiblings(sibDir); root != "" {
 			return root
 		}
 	}
@@ -200,13 +212,17 @@ func findGitRepoRoot(cwd string) string {
 }
 
 // repoRootFromSiblings checks sibling directories of dir for
-// .git worktree files and uses them to discover the true repo
-// root. Returns "" if no sibling has a resolvable worktree link.
+// linked-worktree .git files and uses them to discover the true
+// repo root. Submodule .git files (pointing to .git/modules/)
+// are ignored to avoid misattributing the project.
 func repoRootFromSiblings(dir string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
 	}
+	worktreeMarker := string(filepath.Separator) + ".git" +
+		string(filepath.Separator) + "worktrees" +
+		string(filepath.Separator)
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -214,6 +230,19 @@ func repoRootFromSiblings(dir string) string {
 		gitPath := filepath.Join(dir, entry.Name(), ".git")
 		info, err := os.Stat(gitPath)
 		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		// Resolve the gitdir and only accept linked worktrees.
+		gitDir := readGitDirFromFile(gitPath)
+		if gitDir == "" {
+			continue
+		}
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Clean(
+				filepath.Join(dir, entry.Name(), gitDir),
+			)
+		}
+		if !strings.Contains(gitDir, worktreeMarker) {
 			continue
 		}
 		if root := repoRootFromGitFile(

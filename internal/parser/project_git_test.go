@@ -109,6 +109,84 @@ func TestExtractProjectFromCwd_DeletedNestedWorktree(t *testing.T) {
 	}
 }
 
+func TestExtractProjectFromCwd_DeletedNestedWorktreeDeep(
+	t *testing.T,
+) {
+	// When the deleted worktree path includes subdirectories
+	// (e.g. .../tauri-packaging/cmd/server), the walk must
+	// reach the first existing ancestor before sibling detection.
+	root := t.TempDir()
+
+	mainRepo := filepath.Join(root, "my-project")
+	mustMkdirAll(t, filepath.Join(
+		mainRepo, ".git", "worktrees", "other-branch",
+	))
+
+	container := filepath.Join(root, "worktrees", "my-project")
+	sibling := filepath.Join(container, "other-branch")
+	mustMkdirAll(t, sibling)
+
+	worktreeGitDir := filepath.Join(
+		mainRepo, ".git", "worktrees", "other-branch",
+	)
+	mustWriteFile(t, filepath.Join(sibling, ".git"),
+		"gitdir: "+worktreeGitDir+"\n")
+	mustWriteFile(t, filepath.Join(worktreeGitDir, "commondir"),
+		"../..\n")
+
+	// Nested path inside a deleted worktree — neither
+	// tauri-packaging/ nor cmd/server/ exist on disk.
+	deep := filepath.Join(
+		container, "tauri-packaging", "cmd", "server",
+	)
+
+	got := ExtractProjectFromCwd(deep)
+	if got != "my_project" {
+		t.Fatalf(
+			"ExtractProjectFromCwd(%q) = %q, want %q",
+			deep, got, "my_project",
+		)
+	}
+}
+
+func TestExtractProjectFromCwd_SubmoduleSiblingIgnored(
+	t *testing.T,
+) {
+	// A sibling directory with a submodule .git file (pointing
+	// to .git/modules/) must not be mistaken for a linked
+	// worktree. The function should return "" rather than the
+	// submodule's repo root.
+	root := t.TempDir()
+
+	parentRepo := filepath.Join(root, "parent-repo")
+	mustMkdirAll(t, filepath.Join(
+		parentRepo, ".git", "modules", "sub-lib",
+	))
+
+	container := filepath.Join(root, "worktrees", "parent-repo")
+	submod := filepath.Join(container, "sub-lib")
+	mustMkdirAll(t, submod)
+
+	// Submodule .git file: points to .git/modules/, not
+	// .git/worktrees/.
+	submodGitDir := filepath.Join(
+		parentRepo, ".git", "modules", "sub-lib",
+	)
+	mustWriteFile(t, filepath.Join(submod, ".git"),
+		"gitdir: "+submodGitDir+"\n")
+
+	deleted := filepath.Join(container, "deleted-branch")
+
+	got := ExtractProjectFromCwd(deleted)
+	// No worktree sibling found, falls back to basename.
+	if got != "deleted_branch" {
+		t.Fatalf(
+			"ExtractProjectFromCwd(%q) = %q, want %q",
+			deleted, got, "deleted_branch",
+		)
+	}
+}
+
 func TestExtractProjectFromCwdWithBranch_NestedWorktree(
 	t *testing.T,
 ) {
