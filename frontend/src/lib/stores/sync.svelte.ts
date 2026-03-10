@@ -65,7 +65,8 @@ class SyncStore {
     }
   }
 
-  async loadStatus() {
+  async loadStatus(opts?: { notify?: boolean }) {
+    const notify = opts?.notify ?? true;
     try {
       const status = await api.getSyncStatus();
       const newLastSync = status.last_sync || null;
@@ -75,7 +76,7 @@ class SyncStore {
         newLastSync !== null && newLastSync !== this.lastSync;
       this.lastSync = newLastSync;
       this.lastSyncStats = status.stats;
-      if (changed && !isInitial) {
+      if (changed && !isInitial && notify) {
         this.loadStats();
         this.notifySyncComplete();
       }
@@ -181,13 +182,15 @@ class SyncStore {
     });
 
     handle.done
-      .then(async (s: SyncStats) => {
+      .then((s: SyncStats) => {
         this.lastSyncStats = s;
+        this.loadStats();
+        this.notifySyncComplete();
         finalizeSync();
-        // Hydrate lastSync from the server, which fires
-        // notifySyncComplete() via the changed-timestamp
-        // path exactly once.
-        await this.loadStatus();
+        // Hydrate the authoritative server timestamp so
+        // the next poll does not see a stale lastSync and
+        // fire a duplicate notification.
+        this.loadStatus({ notify: false });
         onComplete?.();
       })
       .catch((err: unknown) => {
