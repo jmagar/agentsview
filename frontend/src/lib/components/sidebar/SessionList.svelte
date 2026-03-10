@@ -222,7 +222,6 @@
     const activeId = sessions.activeSessionId;
     if (!activeId || activeId === prevRevealedId) return;
     if (!containerRef) return;
-    prevRevealedId = activeId;
     // Read displayItems inside the effect so Svelte tracks
     // it — needed to re-run after a group expansion.
     const items = displayItems;
@@ -232,6 +231,10 @@
         it.group?.sessions.some((s) => s.id === activeId),
     );
     if (!item) {
+      // Session may be hidden in a collapsed agent group.
+      // Expand it — the effect will re-run when displayItems
+      // updates, and prevRevealedId is still unset so the
+      // second pass will proceed to scroll.
       if (!groupByAgent) return;
       for (const section of agentSections) {
         const owns = section.groups.some((g) =>
@@ -244,6 +247,9 @@
       }
       return;
     }
+    // Item found — mark as revealed so subsequent
+    // displayItems rebuilds don't re-trigger.
+    prevRevealedId = activeId;
     const itemBottom = item.top + item.height;
     const viewTop = containerRef.scrollTop;
     const viewBottom = viewTop + containerRef.clientHeight;
