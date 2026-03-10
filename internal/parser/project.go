@@ -221,7 +221,7 @@ func findGitRepoRoot(cwd string) string {
 			}
 			sibDir = parent
 		}
-		if root := repoRootFromSiblings(sibDir); root != "" {
+		if root := repoRootFromSiblings(sibDir, cwd); root != "" {
 			return root
 		}
 	}
@@ -256,7 +256,7 @@ func findGitRepoRoot(cwd string) string {
 // true repo root. Submodule .git files are skipped, and all
 // candidates must agree on the same root to avoid
 // misattributing unrelated paths.
-func repoRootFromSiblings(dir string) string {
+func repoRootFromSiblings(dir, cwd string) string {
 	// If dir is itself a repo or worktree, let the normal
 	// upward walk handle it.
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
@@ -340,8 +340,9 @@ func repoRootFromSiblings(dir string) string {
 		if dirCount != 1 {
 			return ""
 		}
-		wtDir := filepath.Join(singleDirRoot, ".git", "worktrees")
-		if info, err := os.Stat(wtDir); err != nil || !info.IsDir() {
+		// Verify the deleted child matches a known worktree
+		// entry under .git/worktrees/.
+		if !deletedChildIsWorktree(dir, cwd, singleDirRoot) {
 			return ""
 		}
 		return singleDirRoot
@@ -356,6 +357,35 @@ func repoRootFromSiblings(dir string) string {
 		}
 	}
 	return found
+}
+
+// deletedChildIsWorktree checks whether the first missing
+// path component (the deleted child under dir) matches an
+// entry in the repo's .git/worktrees/ directory.
+func deletedChildIsWorktree(
+	dir, cwd, repoRoot string,
+) bool {
+	rel, err := filepath.Rel(dir, cwd)
+	if err != nil || rel == "." {
+		return false
+	}
+	child := strings.SplitN(
+		filepath.ToSlash(rel), "/", 2,
+	)[0]
+	if child == "" {
+		return false
+	}
+	wtDir := filepath.Join(repoRoot, ".git", "worktrees")
+	entries, err := os.ReadDir(wtDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.Name() == child {
+			return true
+		}
+	}
+	return false
 }
 
 func repoRootFromGitFile(repoDir, gitFilePath string) string {
