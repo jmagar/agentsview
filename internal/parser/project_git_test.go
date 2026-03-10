@@ -64,7 +64,6 @@ func TestExtractProjectFromCwd_Git(t *testing.T) {
 			want: "my_repo",
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -74,6 +73,78 @@ func TestExtractProjectFromCwd_Git(t *testing.T) {
 				t.Fatalf("ExtractProjectFromCwd(%q) = %q, want %q", cwd, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractProjectFromCwd_DeletedNestedWorktree(t *testing.T) {
+	// Simulates a nested worktree layout where the session's
+	// worktree has been deleted but a sibling worktree still
+	// exists and can reveal the true repo root.
+	root := t.TempDir()
+
+	mainRepo := filepath.Join(root, "my-project")
+	mustMkdirAll(t, filepath.Join(mainRepo, ".git", "worktrees", "other-branch"))
+
+	container := filepath.Join(root, "worktrees", "my-project")
+	sibling := filepath.Join(container, "other-branch")
+	mustMkdirAll(t, sibling)
+
+	worktreeGitDir := filepath.Join(
+		mainRepo, ".git", "worktrees", "other-branch",
+	)
+	mustWriteFile(t, filepath.Join(sibling, ".git"),
+		"gitdir: "+worktreeGitDir+"\n")
+	mustWriteFile(t, filepath.Join(worktreeGitDir, "commondir"),
+		"../..\n")
+
+	// The deleted worktree path — not created on disk.
+	deleted := filepath.Join(container, "tauri-packaging")
+
+	got := ExtractProjectFromCwd(deleted)
+	if got != "my_project" {
+		t.Fatalf(
+			"ExtractProjectFromCwd(%q) = %q, want %q",
+			deleted, got, "my_project",
+		)
+	}
+}
+
+func TestExtractProjectFromCwdWithBranch_NestedWorktree(
+	t *testing.T,
+) {
+	// When a nested worktree is deleted and the branch name
+	// matches the directory name, the sibling-based git root
+	// detection should resolve the correct project name.
+	root := t.TempDir()
+
+	mainRepo := filepath.Join(root, "agentsview")
+	mustMkdirAll(t, filepath.Join(
+		mainRepo, ".git", "worktrees", "fix-worktrees",
+	))
+
+	container := filepath.Join(root, "worktrees", "agentsview")
+	sibling := filepath.Join(container, "fix-worktrees")
+	mustMkdirAll(t, sibling)
+
+	worktreeGitDir := filepath.Join(
+		mainRepo, ".git", "worktrees", "fix-worktrees",
+	)
+	mustWriteFile(t, filepath.Join(sibling, ".git"),
+		"gitdir: "+worktreeGitDir+"\n")
+	mustWriteFile(t, filepath.Join(worktreeGitDir, "commondir"),
+		"../..\n")
+
+	// Deleted worktree where branch name = directory name.
+	deleted := filepath.Join(container, "tauri-packaging")
+
+	got := ExtractProjectFromCwdWithBranch(
+		deleted, "tauri-packaging",
+	)
+	if got != "agentsview" {
+		t.Fatalf(
+			"ExtractProjectFromCwdWithBranch(%q, %q) = %q, want %q",
+			deleted, "tauri-packaging", got, "agentsview",
+		)
 	}
 }
 

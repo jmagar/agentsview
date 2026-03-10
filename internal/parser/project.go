@@ -141,13 +141,16 @@ func isInvalidPathBase(name string) bool {
 
 // findGitRepoRoot walks upward from cwd to find the enclosing git
 // repository root. Supports both standard repos (.git directory)
-// and linked worktrees/submodules (.git file).
+// and linked worktrees/submodules (.git file). When cwd no longer
+// exists on disk, sibling directories are checked for worktree
+// .git files that can reveal the true repo root.
 func findGitRepoRoot(cwd string) string {
 	if cwd == "" {
 		return ""
 	}
 
 	dir := cwd
+	cwdMissing := false
 	if info, err := os.Stat(dir); err == nil {
 		if !info.IsDir() {
 			dir = filepath.Dir(dir)
@@ -157,7 +160,18 @@ func findGitRepoRoot(cwd string) string {
 		if !strings.ContainsRune(dir, filepath.Separator) {
 			return ""
 		}
+		cwdMissing = true
 		dir = filepath.Dir(dir)
+	}
+
+	// When the original path is gone, check sibling directories
+	// for worktree .git files before walking up. This handles
+	// nested worktrees (e.g. worktrees/project/branch/) where
+	// the parent directory is just a container with no .git.
+	if cwdMissing {
+		if root := repoRootFromSiblings(dir); root != "" {
+			return root
+		}
 	}
 
 	for {
@@ -183,6 +197,32 @@ func findGitRepoRoot(cwd string) string {
 		}
 		dir = parent
 	}
+}
+
+// repoRootFromSiblings checks sibling directories of dir for
+// .git worktree files and uses them to discover the true repo
+// root. Returns "" if no sibling has a resolvable worktree link.
+func repoRootFromSiblings(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		gitPath := filepath.Join(dir, entry.Name(), ".git")
+		info, err := os.Stat(gitPath)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if root := repoRootFromGitFile(
+			filepath.Join(dir, entry.Name()), gitPath,
+		); root != "" {
+			return root
+		}
+	}
+	return ""
 }
 
 func repoRootFromGitFile(repoDir, gitFilePath string) string {
