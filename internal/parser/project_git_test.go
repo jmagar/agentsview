@@ -109,6 +109,40 @@ func TestExtractProjectFromCwd_DeletedNestedWorktree(t *testing.T) {
 	}
 }
 
+func TestExtractProjectFromCwd_DeletedNestedWorktreeNoCommondir(
+	t *testing.T,
+) {
+	// When commondir is missing, repoRootFromGitFile falls back
+	// to the strings.Cut marker check. The gitdir must be
+	// normalized so the separator-based marker matches.
+	root := t.TempDir()
+
+	mainRepo := filepath.Join(root, "my-project")
+	worktreeGitDir := filepath.Join(
+		mainRepo, ".git", "worktrees", "other-branch",
+	)
+	mustMkdirAll(t, filepath.Join(mainRepo, ".git"))
+	mustMkdirAll(t, worktreeGitDir)
+	// No commondir file written.
+
+	container := filepath.Join(root, "worktrees", "my-project")
+	sibling := filepath.Join(container, "other-branch")
+	mustMkdirAll(t, sibling)
+
+	mustWriteFile(t, filepath.Join(sibling, ".git"),
+		"gitdir: "+worktreeGitDir+"\n")
+
+	deleted := filepath.Join(container, "tauri-packaging")
+
+	got := ExtractProjectFromCwd(deleted)
+	if got != "my_project" {
+		t.Fatalf(
+			"ExtractProjectFromCwd(%q) = %q, want %q",
+			deleted, got, "my_project",
+		)
+	}
+}
+
 func TestExtractProjectFromCwd_DeletedNestedWorktreeDeep(
 	t *testing.T,
 ) {

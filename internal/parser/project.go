@@ -259,10 +259,9 @@ func repoRootFromGitFile(repoDir, gitFilePath string) string {
 		return ""
 	}
 	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Clean(
-			filepath.Join(filepath.Dir(gitFilePath), gitDir),
-		)
+		gitDir = filepath.Join(filepath.Dir(gitFilePath), gitDir)
 	}
+	gitDir = filepath.Clean(gitDir)
 
 	commonDir := readCommonDir(gitDir)
 	if commonDir != "" {
