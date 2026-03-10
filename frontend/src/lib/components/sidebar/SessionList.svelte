@@ -214,19 +214,24 @@
 
   // Scroll to the active session when it changes (e.g. from
   // the command palette). Expands collapsed agent groups and
-  // scrolls the item into view. Skips if already visible.
+  // scrolls the item into view. Only fires on selection
+  // changes, not on displayItems rebuilds, so collapsing a
+  // group containing the active session stays collapsed.
+  let prevRevealedId: string | null = null;
   $effect(() => {
     const activeId = sessions.activeSessionId;
-    if (!activeId || !containerRef) return;
-    const item = displayItems.find(
+    if (!activeId || activeId === prevRevealedId) return;
+    if (!containerRef) return;
+    prevRevealedId = activeId;
+    // Read displayItems inside the effect so Svelte tracks
+    // it — needed to re-run after a group expansion.
+    const items = displayItems;
+    const item = items.find(
       (it) =>
         it.type === "session" &&
         it.group?.sessions.some((s) => s.id === activeId),
     );
     if (!item) {
-      // Session may be hidden inside a collapsed agent group.
-      // Find and expand the owning agent so the next effect
-      // cycle can locate the item.
       if (!groupByAgent) return;
       for (const section of agentSections) {
         const owns = section.groups.some((g) =>

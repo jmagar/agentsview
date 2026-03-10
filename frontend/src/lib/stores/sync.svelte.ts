@@ -52,6 +52,7 @@ class SyncStore {
     {};
   private statsVersion = 0;
   private syncCompleteListeners: SyncCompleteListener[] = [];
+  private statusHydrated = false;
 
   /** Register a callback invoked after any sync completes. */
   onSyncComplete(listener: SyncCompleteListener) {
@@ -68,11 +69,13 @@ class SyncStore {
     try {
       const status = await api.getSyncStatus();
       const newLastSync = status.last_sync || null;
+      const isInitial = !this.statusHydrated;
+      this.statusHydrated = true;
       const changed =
         newLastSync !== null && newLastSync !== this.lastSync;
       this.lastSync = newLastSync;
       this.lastSyncStats = status.stats;
-      if (changed) {
+      if (changed && !isInitial) {
         this.loadStats();
         this.notifySyncComplete();
       }
@@ -180,10 +183,13 @@ class SyncStore {
     handle.done
       .then((s: SyncStats) => {
         this.lastSyncStats = s;
-        this.lastSync = new Date().toISOString();
         this.loadStats();
         this.notifySyncComplete();
         finalizeSync();
+        // Hydrate lastSync from the server so the next
+        // poll sees the authoritative timestamp and does
+        // not trigger a spurious "changed" notification.
+        this.loadStatus();
         onComplete?.();
       })
       .catch((err: unknown) => {
