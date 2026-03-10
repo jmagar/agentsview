@@ -2,7 +2,7 @@
 
 A local-first desktop and web application for browsing, searching,
 and analyzing AI agent coding sessions. Supports Claude Code, Codex,
-Copilot CLI, Gemini CLI, OpenCode, Amp, and VSCode Copilot.
+OpenCode, and 8 other agents.
 
 <p align="center">
   <img src="https://agentsview.io/screenshots/dashboard.png" alt="Analytics dashboard" width="720">
@@ -52,7 +52,8 @@ patterns over time.
 - **Full-text search** across all message content, instantly
 - **Analytics dashboard** with activity heatmaps, tool usage,
   velocity metrics, and project breakdowns
-- **Multi-agent support** for Claude Code, Codex, Copilot CLI, Gemini CLI, OpenCode, Amp, and VSCode Copilot
+- **Multi-agent support** for Claude Code, Codex, OpenCode, and
+  8 other agents ([full list](#supported-agents))
 - **Live updates** via SSE as active sessions receive new messages
 - **Keyboard-first** navigation (vim-style `j`/`k`/`[`/`]`)
 - **Export and publish** sessions as HTML or to GitHub Gist
@@ -67,10 +68,9 @@ agentsview -port 9090   # custom port
 agentsview -no-browser  # headless mode
 ```
 
-On startup, agentsview discovers sessions from Claude Code, Codex,
-Copilot CLI, Gemini CLI, OpenCode, Amp, and VSCode Copilot, syncs them into a local SQLite database
-with FTS5 full-text search, and opens a web UI at
-`http://127.0.0.1:8080`.
+On startup, agentsview discovers sessions from all supported
+agents, syncs them into a local SQLite database with FTS5
+full-text search, and opens a web UI at `http://127.0.0.1:8080`.
 
 ## Screenshots
 
@@ -145,7 +145,7 @@ PATH/API keys overrides).
 cmd/agentsview/     CLI entrypoint
 internal/config/    Configuration loading
 internal/db/        SQLite operations (sessions, search, analytics)
-internal/parser/    Session parsers (Claude, Codex, Copilot, Gemini, OpenCode, Amp, VSCode Copilot)
+internal/parser/    Session parsers (all supported agents)
 internal/server/    HTTP handlers, SSE, middleware
 internal/sync/      Sync engine, file watcher, discovery
 frontend/           Svelte 5 SPA (Vite, TypeScript)
@@ -153,18 +153,19 @@ frontend/           Svelte 5 SPA (Vite, TypeScript)
 
 ## Supported Agents
 
-| Agent | Session Directory |
-|-------|-------------------|
-| Claude Code | `~/.claude/projects/` |
-| Codex | `~/.codex/sessions/` |
-| Copilot CLI | `~/.copilot/session-state/` |
-| Gemini CLI | `~/.gemini/` |
-| OpenCode | `~/.local/share/opencode/` |
-| Amp | `~/.local/share/amp/threads/` |
-| VSCode Copilot | `~/Library/Application Support/Code/User/` (macOS) |
-
-Override with `CLAUDE_PROJECTS_DIR`, `CODEX_SESSIONS_DIR`,
-`COPILOT_DIR`, `GEMINI_DIR`, `OPENCODE_DIR`, `AMP_DIR`, or `VSCODE_COPILOT_DIR` environment variables.
+| Agent | Session Directory | Env Override |
+|-------|-------------------|--------------|
+| Claude Code | `~/.claude/projects/` | `CLAUDE_PROJECTS_DIR` |
+| Codex | `~/.codex/sessions/` | `CODEX_SESSIONS_DIR` |
+| Copilot | `~/.copilot/` | `COPILOT_DIR` |
+| Gemini | `~/.gemini/` | `GEMINI_DIR` |
+| OpenCode | `~/.local/share/opencode/` | `OPENCODE_DIR` |
+| Cursor | `~/.cursor/projects/` | `CURSOR_PROJECTS_DIR` |
+| Amp | `~/.local/share/amp/threads/` | `AMP_DIR` |
+| iFlow | `~/.iflow/projects/` | `IFLOW_DIR` |
+| VSCode Copilot | `~/Library/Application Support/Code/User/` (macOS) | `VSCODE_COPILOT_DIR` |
+| Pi | `~/.pi/agent/sessions/` | `PI_DIR` |
+| OpenClaw | `~/.openclaw/agents/` | `OPENCLAW_DIR` |
 
 ## Acknowledgements
 
