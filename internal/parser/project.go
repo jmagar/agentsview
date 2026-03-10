@@ -319,19 +319,34 @@ func repoRootFromSiblings(dir string) string {
 		})
 	}
 
-	// Require at least one linked-worktree sibling.
-	hasWorktree := false
+	// Count worktree and directory siblings.
+	var worktreeCount, dirCount int
+	var singleDirRoot string
 	for _, s := range siblings {
-		if !s.isDir {
-			hasWorktree = true
-			break
+		if s.isDir {
+			dirCount++
+			singleDirRoot = s.root
+		} else {
+			worktreeCount++
 		}
 	}
-	if !hasWorktree {
-		return ""
+
+	// With linked-worktree siblings, all candidates must
+	// agree on the same root. Without worktree siblings,
+	// accept a single main checkout only if its
+	// .git/worktrees/ exists, proving it has (or had)
+	// linked worktrees.
+	if worktreeCount == 0 {
+		if dirCount != 1 {
+			return ""
+		}
+		wtDir := filepath.Join(singleDirRoot, ".git", "worktrees")
+		if info, err := os.Stat(wtDir); err != nil || !info.IsDir() {
+			return ""
+		}
+		return singleDirRoot
 	}
 
-	// All candidates must agree on the same root.
 	var found string
 	for _, s := range siblings {
 		if found == "" {

@@ -395,6 +395,32 @@ func TestExtractProjectFromCwd_DeletedSiblingOfNormalRepo(
 	}
 }
 
+func TestExtractProjectFromCwd_DeletedOnlyWorktreeNextToMain(
+	t *testing.T,
+) {
+	// When the only worktree is deleted but the main checkout
+	// still exists with a .git/worktrees/ directory, sibling
+	// detection should still resolve to the repo root.
+	root := t.TempDir()
+
+	container := filepath.Join(root, "container")
+	mainRepo := filepath.Join(container, "my-project")
+	mustMkdirAll(t, filepath.Join(
+		mainRepo, ".git", "worktrees", "feature",
+	))
+
+	// Deleted worktree — not created on disk.
+	deleted := filepath.Join(container, "feature")
+
+	got := ExtractProjectFromCwd(deleted)
+	if got != "my_project" {
+		t.Fatalf(
+			"ExtractProjectFromCwd(%q) = %q, want %q",
+			deleted, got, "my_project",
+		)
+	}
+}
+
 func TestExtractProjectFromCwdWithBranch_NestedWorktree(
 	t *testing.T,
 ) {
