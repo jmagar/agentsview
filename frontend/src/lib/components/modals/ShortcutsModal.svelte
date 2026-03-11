@@ -2,8 +2,11 @@
   import { ui } from "../../stores/ui.svelte.js";
   import { sync } from "../../stores/sync.svelte.js";
 
+  const isMac = navigator.platform.toUpperCase().includes("MAC");
+  const mod = isMac ? "Cmd" : "Ctrl";
+
   const baseShortcuts = [
-    { key: "Cmd+K", action: "Open command palette" },
+    { key: `${mod}+K`, action: "Open command palette" },
     { key: "Esc", action: "Close palette / modal" },
     { key: "j / \u2193", action: "Next message" },
     { key: "k / \u2191", action: "Previous message" },
@@ -20,9 +23,9 @@
   ];
 
   const zoomShortcuts = [
-    { key: "Cmd++", action: "Zoom in" },
-    { key: "Cmd+-", action: "Zoom out" },
-    { key: "Cmd+0", action: "Reset zoom" },
+    { key: `${mod}++`, action: "Zoom in" },
+    { key: `${mod}+-`, action: "Zoom out" },
+    { key: `${mod}+0`, action: "Reset zoom" },
   ];
 
   const shortcuts = sync.isDesktop

@@ -3,6 +3,9 @@
   import { ui } from "../../stores/ui.svelte.js";
   import { formatNumber, formatRelativeTime } from "../../utils/format.js";
 
+  const isMac = navigator.platform.toUpperCase().includes("MAC");
+  const mod = isMac ? "Cmd" : "Ctrl";
+
   let progressText = $derived.by(() => {
     if (!sync.syncing || !sync.progress) return null;
     const p = sync.progress;
@@ -37,14 +40,14 @@
           class="zoom-btn"
           onclick={() => ui.zoomOut()}
           disabled={ui.zoomLevel <= 67}
-          title="Zoom out (Cmd+-)"
+          title="Zoom out ({mod}+-)"
         >
           &minus;
         </button>
         <button
           class="zoom-level"
           onclick={() => ui.resetZoom()}
-          title="Reset zoom (Cmd+0)"
+          title="Reset zoom ({mod}+0)"
         >
           {ui.zoomLevel}%
         </button>
@@ -52,7 +55,7 @@
           class="zoom-btn"
           onclick={() => ui.zoomIn()}
           disabled={ui.zoomLevel >= 200}
-          title="Zoom in (Cmd++)"
+          title="Zoom in ({mod}++)"
         >
           +
         </button>
