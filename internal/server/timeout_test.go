@@ -9,22 +9,27 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wesm/agentsview/internal/testjsonl"
 )
 
 // TestServerTimeouts starts a real HTTP server and verifies that
 // streaming connections (SSE) are not closed prematurely by WriteTimeout.
 func TestServerTimeouts(t *testing.T) {
 	// Set a very short WriteTimeout to verify SSE is exempt.
-	// If SSE were subject to this timeout, the connection would close
-	// well before our 500ms wait below.
 	writeTimeout := 100 * time.Millisecond
-	sleepDuration := 500 * time.Millisecond // Must be > writeTimeout
+	sleepDuration := 500 * time.Millisecond
 
 	te := setup(t, withWriteTimeout(writeTimeout))
 
-	sessionPath := te.writeProjectFile(
-		t, "test-project", "watch-test.jsonl", `{"type":"user"}`,
+	initial := testjsonl.NewSessionBuilder().
+		AddClaudeUser("2025-01-01T00:00:00Z", "initial message")
+	sessionPath := te.writeSessionFile(
+		t, "test-project", "watch-test.jsonl", initial,
 	)
+
+	// Seed the DB.
+	te.engine.SyncAll(nil)
 
 	baseURL := te.listenAndServe(t)
 
@@ -37,7 +42,9 @@ func TestServerTimeouts(t *testing.T) {
 	)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodGet, url, nil,
+	)
 	if err != nil {
 		t.Fatalf("creating request: %v", err)
 	}
@@ -52,29 +59,41 @@ func TestServerTimeouts(t *testing.T) {
 		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
 	}
 
-	// Trigger an update after 500ms (> WriteTimeout of 100ms).
-	// If the handler had a timeout, the body would be closed by now.
+	// Trigger an update after 500ms (> WriteTimeout).
 	errCh := make(chan error, 1)
 	go func() {
 		time.Sleep(sleepDuration)
-		f, err := os.OpenFile(sessionPath, os.O_APPEND|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(
+			sessionPath, os.O_APPEND|os.O_WRONLY, 0644,
+		)
 		if err != nil {
 			errCh <- fmt.Errorf("opening file: %w", err)
 			return
 		}
-		defer f.Close()
 
-		if _, err := f.WriteString("\n{\"type\":\"user\",\"content\":\"update\"}"); err != nil {
+		update := testjsonl.NewSessionBuilder().
+			AddClaudeAssistant(
+				"2025-01-01T00:00:05Z", "response",
+			)
+		if _, err := f.WriteString(update.String()); err != nil {
+			f.Close()
 			errCh <- fmt.Errorf("writing update: %w", err)
 			return
 		}
+		f.Close()
+
+		// Sync to update the DB — the session monitor polls
+		// DB changes, not file mtime.
+		te.engine.SyncPaths([]string{sessionPath})
 	}()
 
 	readCh := make(chan string)
 	go func() {
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
-			if strings.Contains(scanner.Text(), "session_updated") {
+			if strings.Contains(
+				scanner.Text(), "session_updated",
+			) {
 				readCh <- scanner.Text()
 				return
 			}

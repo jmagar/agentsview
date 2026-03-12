@@ -90,6 +90,54 @@ func TestLineReader(t *testing.T) {
 	}
 }
 
+func TestLineReaderBytesRead(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int64
+	}{
+		{
+			"complete lines",
+			"aaa\nbbb\n",
+			8, // 3+1+3+1
+		},
+		{
+			"no trailing newline",
+			"aaa\nbbb",
+			7, // 3+1+3 (no newline after bbb)
+		},
+		{
+			"empty",
+			"",
+			0,
+		},
+		{
+			"single line with newline",
+			"hello\n",
+			6,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lr := newLineReader(
+				strings.NewReader(tt.input), 100,
+			)
+			for {
+				_, ok := lr.next()
+				if !ok {
+					break
+				}
+			}
+			if lr.bytesRead != tt.want {
+				t.Errorf(
+					"bytesRead = %d, want %d",
+					lr.bytesRead, tt.want,
+				)
+			}
+		})
+	}
+}
+
 func TestLineReaderIOError(t *testing.T) {
 	ioErr := errors.New("disk read failed")
 	r := io.MultiReader(

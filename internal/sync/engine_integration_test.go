@@ -2843,3 +2843,148 @@ func TestPiSessionIntegration(t *testing.T) {
 		},
 	)
 }
+
+func TestIncrementalSync_ClaudeAppend(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// Initial sync: one user message.
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("hello", tsZero),
+	)
+	path := env.writeClaudeSession(
+		t, "proj", "inc-test.jsonl", initial,
+	)
+	env.engine.SyncAll(nil)
+
+	assertSessionMessageCount(t, env.db, "inc-test", 1)
+	assertMessageRoles(t, env.db, "inc-test", "user")
+	msgs := fetchMessages(t, env.db, "inc-test")
+	if msgs[0].SessionID != "inc-test" {
+		t.Fatalf(
+			"msgs[0].SessionID = %q, want inc-test",
+			msgs[0].SessionID,
+		)
+	}
+
+	// Verify metadata is set from full parse.
+	full, err := env.db.GetSessionFull(
+		context.Background(), "inc-test",
+	)
+	if err != nil {
+		t.Fatalf("GetSessionFull: %v", err)
+	}
+	if full.FileHash == nil || *full.FileHash == "" {
+		t.Fatal("file_hash not set after full parse")
+	}
+	origHash := *full.FileHash
+
+	// Append an assistant response.
+	appended := testjsonl.ClaudeAssistantJSON(
+		"world", tsZeroS5,
+	) + "\n"
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	if err != nil {
+		t.Fatalf("open for append: %v", err)
+	}
+	_, err = f.WriteString(appended)
+	f.Close()
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	// SyncPaths triggers incremental parse.
+	env.engine.SyncPaths([]string{path})
+
+	// Session count updated.
+	assertSessionMessageCount(t, env.db, "inc-test", 2)
+	assertMessageRoles(
+		t, env.db, "inc-test", "user", "assistant",
+	)
+
+	// New message has correct session_id.
+	msgs = fetchMessages(t, env.db, "inc-test")
+	for i, m := range msgs {
+		if m.SessionID != "inc-test" {
+			t.Errorf(
+				"msgs[%d].SessionID = %q, want inc-test",
+				i, m.SessionID,
+			)
+		}
+	}
+
+	// Metadata preserved (file_hash not cleared).
+	updated, err := env.db.GetSessionFull(
+		context.Background(), "inc-test",
+	)
+	if err != nil {
+		t.Fatalf("GetSessionFull after incremental: %v", err)
+	}
+	if updated.FileHash == nil ||
+		*updated.FileHash != origHash {
+		t.Errorf(
+			"file_hash = %v, want %q (preserved)",
+			updated.FileHash, origHash,
+		)
+	}
+}
+
+func TestIncrementalSync_CodexAppend(t *testing.T) {
+	env := setupTestEnv(t)
+
+	initial := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(
+			"inc-cx", "/tmp/proj",
+			"codex_cli_rs", tsEarly,
+		),
+		testjsonl.CodexMsgJSON("user", "hello", tsEarlyS1),
+	)
+	path := env.writeCodexSession(
+		t, filepath.Join("2024", "01", "01"),
+		"rollout-20240101-inc-cx.jsonl", initial,
+	)
+	env.engine.SyncAll(nil)
+
+	assertSessionMessageCount(
+		t, env.db, "codex:inc-cx", 1,
+	)
+
+	// Append new messages.
+	appended := testjsonl.JoinJSONL(
+		testjsonl.CodexMsgJSON(
+			"assistant", "world", tsEarlyS5,
+		),
+	)
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	if err != nil {
+		t.Fatalf("open for append: %v", err)
+	}
+	_, err = f.WriteString(appended)
+	f.Close()
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	env.engine.SyncPaths([]string{path})
+
+	assertSessionMessageCount(
+		t, env.db, "codex:inc-cx", 2,
+	)
+	assertMessageRoles(
+		t, env.db, "codex:inc-cx", "user", "assistant",
+	)
+
+	// Verify session_id on all messages.
+	msgs := fetchMessages(t, env.db, "codex:inc-cx")
+	for i, m := range msgs {
+		if m.SessionID != "codex:inc-cx" {
+			t.Errorf(
+				"msgs[%d].SessionID = %q, want codex:inc-cx",
+				i, m.SessionID,
+			)
+		}
+	}
+}

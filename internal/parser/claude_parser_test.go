@@ -198,6 +198,300 @@ func TestParseClaudeSession_ParentSessionID(t *testing.T) {
 	})
 }
 
+func TestParseClaudeSessionFrom_Incremental(t *testing.T) {
+	t.Parallel()
+
+	// Build initial content: user + assistant.
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("hello world", tsEarly),
+		testjsonl.ClaudeAssistantJSON("hi there", tsEarlyS1),
+	)
+
+	path := createTestFile(t, "inc-claude.jsonl", initial)
+
+	// Full parse to get baseline.
+	results, err := ParseClaudeSession(path, "proj", "local")
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+	assert.Equal(t, 2, len(results[0].Messages))
+	assert.Equal(t, 0, results[0].Messages[0].Ordinal)
+	assert.Equal(t, 1, results[0].Messages[1].Ordinal)
+
+	// Record file size as the incremental offset.
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	offset := info.Size()
+
+	// Append new messages.
+	appended := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("follow up", tsEarlyS5),
+		testjsonl.ClaudeAssistantJSON("got it", tsLate),
+	)
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	require.NoError(t, err)
+	_, err = f.WriteString(appended)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	// Incremental parse from offset.
+	newMsgs, endedAt, _, err := ParseClaudeSessionFrom(
+		path, offset, 2,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 2, len(newMsgs))
+
+	// Ordinals continue from startOrdinal=2.
+	assert.Equal(t, 2, newMsgs[0].Ordinal)
+	assert.Equal(t, RoleUser, newMsgs[0].Role)
+	assert.Contains(t, newMsgs[0].Content, "follow up")
+
+	assert.Equal(t, 3, newMsgs[1].Ordinal)
+	assert.Equal(t, RoleAssistant, newMsgs[1].Role)
+	assert.Contains(t, newMsgs[1].Content, "got it")
+
+	assert.False(t, endedAt.IsZero())
+}
+
+func TestParseClaudeSessionFrom_SkipsNonMessages(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	// Initial content with a "system" type line mixed in.
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("first", tsEarly),
+	)
+	path := createTestFile(
+		t, "inc-claude-skip.jsonl", initial,
+	)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	offset := info.Size()
+
+	// Append a system line followed by a real message.
+	appended := `{"type":"system","timestamp":"` +
+		tsEarlyS5 + `","message":{}}` + "\n" +
+		testjsonl.ClaudeAssistantJSON("response", tsLate) +
+		"\n"
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	require.NoError(t, err)
+	_, err = f.WriteString(appended)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	newMsgs, _, _, err := ParseClaudeSessionFrom(
+		path, offset, 1,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(newMsgs))
+	assert.Equal(t, RoleAssistant, newMsgs[0].Role)
+	assert.Equal(t, 1, newMsgs[0].Ordinal)
+}
+
+func TestParseClaudeSessionFrom_NoNewData(t *testing.T) {
+	t.Parallel()
+
+	content := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("only msg", tsEarly),
+	)
+	path := createTestFile(
+		t, "inc-claude-empty.jsonl", content,
+	)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+
+	// Parse from EOF — should return empty.
+	newMsgs, endedAt, _, err := ParseClaudeSessionFrom(
+		path, info.Size(), 1,
+	)
+	require.NoError(t, err)
+	assert.Empty(t, newMsgs)
+	assert.True(t, endedAt.IsZero())
+}
+
+func TestParseClaudeSessionFrom_PartialLineAtEOF(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("hello", tsEarly),
+	)
+	path := createTestFile(
+		t, "inc-partial.jsonl", initial,
+	)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	offset := info.Size()
+
+	// Append a complete line + a partial (truncated) line.
+	complete := testjsonl.ClaudeAssistantJSON(
+		"complete", tsEarlyS5,
+	) + "\n"
+	partial := `{"type":"user","timestamp":"` + tsLate
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	require.NoError(t, err)
+	_, err = f.WriteString(complete + partial)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	newMsgs, _, consumed, err := ParseClaudeSessionFrom(
+		path, offset, 1,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(newMsgs))
+	assert.Equal(t, RoleAssistant, newMsgs[0].Role)
+
+	// consumed should cover only the complete line, not
+	// the partial one.
+	assert.Equal(t, int64(len(complete)), consumed)
+}
+
+func TestParseClaudeSessionFrom_DAGDetected(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("hello", tsEarly),
+	)
+	path := createTestFile(
+		t, "inc-dag.jsonl", initial,
+	)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	offset := info.Size()
+
+	// Append two entries that form a fork: both have the
+	// same parentUuid but different uuids.
+	fork1 := `{"type":"user","uuid":"child-1",` +
+		`"parentUuid":"root-1",` +
+		`"timestamp":"` + tsEarlyS5 +
+		`","message":{"content":"branch A"}}` + "\n"
+	fork2 := `{"type":"assistant","uuid":"child-2",` +
+		`"parentUuid":"root-1",` +
+		`"timestamp":"` + tsLate +
+		`","message":{"content":[` +
+		`{"type":"text","text":"branch B"}]}}` + "\n"
+
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	require.NoError(t, err)
+	_, err = f.WriteString(fork1 + fork2)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	_, _, _, err = ParseClaudeSessionFrom(
+		path, offset, 1,
+	)
+	assert.ErrorIs(t, err, ErrDAGDetected)
+}
+
+func TestParseClaudeSessionFrom_DAGAcrossNonUUID(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("hello", tsEarly),
+	)
+	path := createTestFile(
+		t, "inc-dag-gap.jsonl", initial,
+	)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	offset := info.Size()
+
+	// Append: UUID entry, then a non-UUID entry (no uuid
+	// field), then another UUID entry whose parentUuid
+	// doesn't match the first UUID entry. The non-UUID gap
+	// must not prevent fork detection.
+	line1 := `{"type":"user","uuid":"u1",` +
+		`"parentUuid":"pre",` +
+		`"timestamp":"` + tsEarlyS5 +
+		`","message":{"content":"a"}}` + "\n"
+	noUUID := `{"type":"user",` +
+		`"timestamp":"` + tsLate +
+		`","message":{"content":"gap"}}` + "\n"
+	line2 := `{"type":"assistant","uuid":"u2",` +
+		`"parentUuid":"other",` +
+		`"timestamp":"` + tsLate +
+		`","message":{"content":[` +
+		`{"type":"text","text":"b"}]}}` + "\n"
+
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	require.NoError(t, err)
+	_, err = f.WriteString(line1 + noUUID + line2)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	_, _, _, err = ParseClaudeSessionFrom(
+		path, offset, 1,
+	)
+	assert.ErrorIs(t, err, ErrDAGDetected)
+}
+
+func TestParseClaudeSessionFrom_LinearUUID(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("hello", tsEarly),
+	)
+	path := createTestFile(
+		t, "inc-linear-uuid.jsonl", initial,
+	)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	offset := info.Size()
+
+	// Append UUID-bearing entries that form a linear chain
+	// (each entry's parentUuid == previous entry's uuid).
+	// This should NOT trigger ErrDAGDetected.
+	line1 := `{"type":"user","uuid":"u1",` +
+		`"parentUuid":"pre-existing",` +
+		`"timestamp":"` + tsEarlyS5 +
+		`","message":{"content":"msg1"}}` + "\n"
+	line2 := `{"type":"assistant","uuid":"u2",` +
+		`"parentUuid":"u1",` +
+		`"timestamp":"` + tsLate +
+		`","message":{"content":[` +
+		`{"type":"text","text":"reply"}]}}` + "\n"
+
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	require.NoError(t, err)
+	_, err = f.WriteString(line1 + line2)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	newMsgs, endedAt, _, err := ParseClaudeSessionFrom(
+		path, offset, 1,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 2, len(newMsgs))
+	assert.Equal(t, 1, newMsgs[0].Ordinal)
+	assert.Equal(t, 2, newMsgs[1].Ordinal)
+	assert.False(t, endedAt.IsZero())
+}
+
 func loadFixture(t *testing.T, name string) string {
 	t.Helper()
 	path := filepath.Join("testdata", name)

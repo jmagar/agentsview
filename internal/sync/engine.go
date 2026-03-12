@@ -1035,7 +1035,7 @@ func (e *Engine) collectAndBatch(
 			}
 			continue
 		}
-		if len(r.results) == 0 {
+		if len(r.results) == 0 && r.incremental == nil {
 			e.cacheSkip(r.path, r.mtime)
 			progress.SessionsDone++
 			if onProgress != nil {
@@ -1046,11 +1046,23 @@ func (e *Engine) collectAndBatch(
 		e.clearSkip(r.path)
 		stats.filesOK++
 
-		for _, pr := range r.results {
-			pending = append(pending, pendingWrite{
-				sess: pr.Session,
-				msgs: pr.Messages,
-			})
+		if r.incremental != nil {
+			if err := e.writeIncremental(r.incremental); err != nil {
+				log.Printf("%v", err)
+				stats.RecordFailed()
+				continue
+			}
+			stats.RecordSynced(1)
+			progress.MessagesIndexed += len(
+				r.incremental.msgs,
+			)
+		} else {
+			for _, pr := range r.results {
+				pending = append(pending, pendingWrite{
+					sess: pr.Session,
+					msgs: pr.Messages,
+				})
+			}
 		}
 
 		if len(pending) >= batchSize {
@@ -1079,11 +1091,25 @@ func (e *Engine) collectAndBatch(
 	return stats
 }
 
+// incrementalUpdate holds the delta produced by an
+// incremental JSONL parse, used to partially update the
+// session row without overwriting unrelated columns.
+type incrementalUpdate struct {
+	sessionID    string
+	msgs         []parser.ParsedMessage
+	endedAt      time.Time
+	msgCount     int // total (old + new)
+	userMsgCount int // total (old + new)
+	fileSize     int64
+	fileMtime    int64
+}
+
 type processResult struct {
-	results []parser.ParseResult
-	skip    bool
-	mtime   int64
-	err     error
+	results     []parser.ParseResult
+	skip        bool
+	mtime       int64
+	err         error
+	incremental *incrementalUpdate
 }
 
 func (e *Engine) processFile(
@@ -1227,6 +1253,15 @@ func (e *Engine) processClaude(
 		}
 	}
 
+	// Try incremental parse for append-only JSONL files
+	// that have already been synced.
+	if res, ok := e.tryIncrementalJSONL(
+		file, info, parser.AgentClaude,
+		parser.ParseClaudeSessionFrom,
+	); ok {
+		return res
+	}
+
 	// Determine project name from cwd if possible
 	project := parser.GetProjectName(file.Project)
 	cwd, gitBranch := parser.ExtractClaudeProjectHints(
@@ -1259,6 +1294,101 @@ func (e *Engine) processClaude(
 	return processResult{results: results}
 }
 
+// incrementalParseFunc reads new JSONL lines from a file
+// starting at the given byte offset with the given starting
+// ordinal. Returns parsed messages, the latest timestamp
+// (endedAt), bytes consumed (relative to offset), and any
+// error. The consumed count covers only complete, valid JSON
+// lines so it can be used as a safe resume offset.
+type incrementalParseFunc func(
+	path string, offset int64, startOrdinal int,
+) ([]parser.ParsedMessage, time.Time, int64, error)
+
+// tryIncrementalJSONL attempts an incremental parse of an
+// append-only JSONL file by reading only bytes appended since
+// the last sync. Returns (result, true) on success, or
+// (zero, false) to fall through to a full parse. Falls back
+// to full parse when the file maps to multiple DB sessions
+// (e.g. Claude DAG forks).
+func (e *Engine) tryIncrementalJSONL(
+	file parser.DiscoveredFile,
+	info os.FileInfo,
+	agent parser.AgentType,
+	parseFn incrementalParseFunc,
+) (processResult, bool) {
+	inc, ok := e.db.GetSessionForIncremental(file.Path)
+	if !ok || inc.FileSize <= 0 {
+		return processResult{}, false
+	}
+
+	currentSize := info.Size()
+	if currentSize <= inc.FileSize {
+		return processResult{}, false
+	}
+
+	maxOrd := e.db.MaxOrdinal(inc.ID)
+	if maxOrd < 0 {
+		return processResult{}, false
+	}
+
+	newMsgs, endedAt, consumed, err := parseFn(
+		file.Path, inc.FileSize, maxOrd+1,
+	)
+	if err != nil {
+		log.Printf(
+			"incremental %s %s: %v (full parse)",
+			agent, file.Path, err,
+		)
+		return processResult{}, false
+	}
+
+	// Use the offset through the last valid JSON line, not
+	// info.Size(), so partial lines at EOF are retried on
+	// the next sync.
+	newOffset := inc.FileSize + consumed
+
+	if len(newMsgs) == 0 {
+		// No new messages, but advance the offset past
+		// non-message lines (progress events, metadata)
+		// so they aren't re-read on every sync. Carry
+		// endedAt forward so session bounds stay current
+		// with non-message timestamps (e.g. progress).
+		if consumed > 0 {
+			return processResult{
+				incremental: &incrementalUpdate{
+					sessionID:    inc.ID,
+					endedAt:      endedAt,
+					msgCount:     inc.MsgCount,
+					userMsgCount: inc.UserMsgCount,
+					fileSize:     newOffset,
+					fileMtime:    info.ModTime().UnixNano(),
+				},
+			}, true
+		}
+		return processResult{skip: true}, true
+	}
+
+	newUserCount := countUserMsgs(newMsgs)
+
+	log.Printf(
+		"incremental %s %s: %d new message(s) "+
+			"from offset %d",
+		agent, inc.ID, len(newMsgs), inc.FileSize,
+	)
+
+	return processResult{
+		incremental: &incrementalUpdate{
+			sessionID:    inc.ID,
+			msgs:         newMsgs,
+			endedAt:      endedAt,
+			msgCount:     inc.MsgCount + len(newMsgs),
+			userMsgCount: inc.UserMsgCount + newUserCount,
+			fileSize:     newOffset,
+			fileMtime:    info.ModTime().UnixNano(),
+		},
+	}, true
+}
+
 func (e *Engine) processCodex(
 	file parser.DiscoveredFile, info os.FileInfo,
 ) processResult {
@@ -1266,6 +1396,21 @@ func (e *Engine) processCodex(
 	// Fast path: skip by file_path + mtime before parsing.
 	if e.shouldSkipByPath(file.Path, info) {
 		return processResult{skip: true}
+	}
+
+	// Try incremental parse for append-only JSONL files
+	// that have already been synced.
+	codexParseFn := func(
+		path string, offset int64, startOrd int,
+	) ([]parser.ParsedMessage, time.Time, int64, error) {
+		return parser.ParseCodexSessionFrom(
+			path, offset, startOrd, false,
+		)
+	}
+	if res, ok := e.tryIncrementalJSONL(
+		file, info, parser.AgentCodex, codexParseFn,
+	); ok {
+		return res
 	}
 
 	sess, msgs, err := parser.ParseCodexSession(
@@ -1609,20 +1754,87 @@ func (e *Engine) writeBatch(batch []pendingWrite) {
 		s := toDBSession(pw)
 		s.MessageCount, s.UserMessageCount =
 			postFilterCounts(msgs)
+
+		// UpsertSession first: the session row must exist
+		// before messages can be inserted (FK constraint).
+		// This is safe because writeBatch runs full parses
+		// that always recompute all columns. For
+		// incremental updates (writeIncremental), messages
+		// are written first since the session already
+		// exists.
 		if err := e.db.UpsertSession(s); err != nil {
 			if errors.Is(err, db.ErrSessionExcluded) {
-				// Cache as skipped so excluded files are not
-				// re-parsed on subsequent syncs.
 				if pw.sess.File.Path != "" {
-					e.cacheSkip(pw.sess.File.Path, pw.sess.File.Mtime)
+					e.cacheSkip(
+						pw.sess.File.Path,
+						pw.sess.File.Mtime,
+					)
 				}
 				continue
 			}
 			log.Printf("upsert session %s: %v", s.ID, err)
 			continue
 		}
-		e.writeMessages(pw.sess.ID, msgs)
+
+		if err := e.writeMessages(
+			pw.sess.ID, msgs,
+		); err != nil {
+			log.Printf("%v", err)
+			continue
+		}
 	}
+}
+
+// writeIncremental appends new messages and partially updates
+// session metadata without overwriting columns that are not
+// recomputed during incremental parsing (e.g. file_hash,
+// parent_session_id, relationship_type).
+func (e *Engine) writeIncremental(
+	inc *incrementalUpdate,
+) error {
+	dbMsgs := toDBMessages(
+		pendingWrite{
+			sess: parser.ParsedSession{ID: inc.sessionID},
+			msgs: inc.msgs,
+		},
+		e.blockedResultCategories,
+	)
+
+	// Adjust counts for blocked-category filtering.
+	newTotal, newUser := postFilterCounts(dbMsgs)
+	filtered := len(inc.msgs) - newTotal
+	msgCount := inc.msgCount - filtered
+	userFiltered := countUserMsgs(inc.msgs) - newUser
+	userMsgCount := inc.userMsgCount - userFiltered
+
+	var endedAt *string
+	if !inc.endedAt.IsZero() {
+		s := inc.endedAt.Format(time.RFC3339Nano)
+		endedAt = &s
+	}
+
+	// Write messages first — only advance file_size when
+	// the insert succeeds so a failure is retried.
+	if err := e.writeMessages(
+		inc.sessionID, dbMsgs,
+	); err != nil {
+		return fmt.Errorf(
+			"incremental messages %s: %w",
+			inc.sessionID, err,
+		)
+	}
+
+	if err := e.db.UpdateSessionIncremental(
+		inc.sessionID, endedAt,
+		msgCount, userMsgCount,
+		inc.fileSize, inc.fileMtime,
+	); err != nil {
+		return fmt.Errorf(
+			"incremental update %s: %w",
+			inc.sessionID, err,
+		)
+	}
+	return nil
 }
 
 // writeMessages uses an incremental append when possible.
@@ -1632,18 +1844,18 @@ func (e *Engine) writeBatch(batch []pendingWrite) {
 // delete+reinsert of existing content).
 func (e *Engine) writeMessages(
 	sessionID string, msgs []db.Message,
-) {
+) error {
 	maxOrd := e.db.MaxOrdinal(sessionID)
 
 	// No existing messages — insert all.
 	if maxOrd < 0 {
 		if err := e.db.InsertMessages(msgs); err != nil {
-			log.Printf(
-				"insert messages for %s: %v",
+			return fmt.Errorf(
+				"insert messages for %s: %w",
 				sessionID, err,
 			)
 		}
-		return
+		return nil
 	}
 
 	// Find new messages (ordinal > maxOrd).
@@ -1657,15 +1869,16 @@ func (e *Engine) writeMessages(
 	}
 
 	if delta == 0 {
-		return
+		return nil
 	}
 
 	if err := e.db.InsertMessages(msgs); err != nil {
-		log.Printf(
-			"append messages for %s: %v",
+		return fmt.Errorf(
+			"append messages for %s: %w",
 			sessionID, err,
 		)
 	}
+	return nil
 }
 
 // writeSessionFull upserts a session and does a full
@@ -1757,6 +1970,17 @@ func postFilterCounts(msgs []db.Message) (total, user int) {
 		}
 	}
 	return len(msgs), user
+}
+
+// countUserMsgs counts user messages in parsed messages.
+func countUserMsgs(msgs []parser.ParsedMessage) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == parser.RoleUser {
+			n++
+		}
+	}
+	return n
 }
 
 func countMessages(batch []pendingWrite) int {
@@ -1857,6 +2081,12 @@ func (e *Engine) SyncSingleSession(sessionID string) error {
 	}
 	if res.skip {
 		return nil
+	}
+
+	// Handle incremental updates from processFile (e.g.
+	// append-only JSONL that was already synced).
+	if res.incremental != nil {
+		return e.writeIncremental(res.incremental)
 	}
 
 	// For Codex, processFile uses includeExec=false which may

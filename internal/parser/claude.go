@@ -192,6 +192,164 @@ func ParseClaudeSession(
 	)
 }
 
+// ParseClaudeSessionFrom parses only new lines from a Claude
+// JSONL file starting at the given byte offset. Returns only
+// the newly parsed messages (with ordinals starting at
+// startOrdinal) and the latest timestamp. Fork detection is
+// skipped — new entries are processed linearly. Used for
+// incremental re-parsing of append-only session files.
+// ErrDAGDetected is returned by ParseClaudeSessionFrom when
+// appended lines contain uuid fields that require DAG-aware
+// fork detection, which incremental parsing cannot handle.
+var ErrDAGDetected = fmt.Errorf(
+	"incremental parse: DAG uuid detected",
+)
+
+func ParseClaudeSessionFrom(
+	path string,
+	offset int64,
+	startOrdinal int,
+) ([]ParsedMessage, time.Time, int64, error) {
+	var (
+		entries   []dagEntry
+		lineIndex = startOrdinal
+		// Track latest timestamp from all lines, including
+		// non-message events (progress, queue-operation) so
+		// callers can update ended_at even when no new
+		// messages are found.
+		latestTS time.Time
+	)
+
+	consumed, err := readJSONLFrom(
+		path, offset, func(line string) {
+			if ts := extractTimestamp(line); !ts.IsZero() {
+				if ts.After(latestTS) {
+					latestTS = ts
+				}
+			}
+			entryType := gjson.Get(line, "type").Str
+			if entryType != "user" &&
+				entryType != "assistant" {
+				return
+			}
+			ts := extractTimestamp(line)
+			entries = append(entries, dagEntry{
+				uuid:       gjson.Get(line, "uuid").Str,
+				parentUuid: gjson.Get(line, "parentUuid").Str,
+				entryType:  entryType,
+				lineIndex:  lineIndex,
+				line:       line,
+				timestamp:  ts,
+			})
+			lineIndex++
+		},
+	)
+	if err != nil {
+		return nil, time.Time{}, 0, fmt.Errorf(
+			"reading claude %s from offset %d: %w",
+			path, offset, err,
+		)
+	}
+
+	if len(entries) == 0 {
+		return nil, latestTS, consumed, nil
+	}
+
+	// Detect forks: if any entry's parentUuid doesn't
+	// match the previous entry's uuid, the appended data
+	// contains a branch that requires full DAG processing.
+	if hasDAGFork(entries) {
+		return nil, time.Time{}, 0, ErrDAGDetected
+	}
+
+	msgs, _, endedAt := extractMessagesFrom(
+		entries, startOrdinal,
+	)
+	// Use the latest timestamp from all lines (including
+	// non-message events) if it's later than what
+	// extractMessagesFrom found.
+	if latestTS.After(endedAt) {
+		endedAt = latestTS
+	}
+	return msgs, endedAt, consumed, nil
+}
+
+// hasDAGFork returns true if the entries contain a fork —
+// i.e. any entry whose parentUuid doesn't point to the
+// immediately preceding entry's uuid. Linear UUID chains
+// (each entry parenting the next) are safe for incremental
+// parsing; forks require full DAG processing.
+func hasDAGFork(entries []dagEntry) bool {
+	var lastUUID string
+	for _, e := range entries {
+		if e.uuid == "" {
+			continue // non-UUID entries are always linear
+		}
+		if lastUUID != "" &&
+			e.parentUuid != lastUUID {
+			return true
+		}
+		lastUUID = e.uuid
+	}
+	return false
+}
+
+// extractMessagesFrom is like extractMessages but uses a
+// custom starting ordinal for incremental parsing.
+func extractMessagesFrom(
+	entries []dagEntry, startOrdinal int,
+) ([]ParsedMessage, time.Time, time.Time) {
+	var (
+		messages  []ParsedMessage
+		startedAt time.Time
+		endedAt   time.Time
+		ordinal   = startOrdinal
+	)
+
+	for _, e := range entries {
+		if !e.timestamp.IsZero() {
+			if startedAt.IsZero() {
+				startedAt = e.timestamp
+			}
+			endedAt = e.timestamp
+		}
+
+		if e.entryType == "user" {
+			if gjson.Get(e.line, "isMeta").Bool() ||
+				gjson.Get(e.line, "isCompactSummary").Bool() {
+				continue
+			}
+		}
+
+		content := gjson.Get(e.line, "message.content")
+		text, hasThinking, hasToolUse, tcs, trs :=
+			ExtractTextContent(content)
+		if strings.TrimSpace(text) == "" && len(trs) == 0 {
+			continue
+		}
+
+		if e.entryType == "user" &&
+			isClaudeSystemMessage(text) {
+			continue
+		}
+
+		messages = append(messages, ParsedMessage{
+			Ordinal:       ordinal,
+			Role:          RoleType(e.entryType),
+			Content:       text,
+			Timestamp:     e.timestamp,
+			HasThinking:   hasThinking,
+			HasToolUse:    hasToolUse,
+			ContentLength: len(text),
+			ToolCalls:     tcs,
+			ToolResults:   trs,
+		})
+		ordinal++
+	}
+
+	return messages, startedAt, endedAt
+}
+
 // parseLinear processes entries sequentially without DAG awareness.
 func parseLinear(
 	entries []dagEntry,

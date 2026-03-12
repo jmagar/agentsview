@@ -4094,3 +4094,142 @@ CREATE TABLE IF NOT EXISTS insights (
 	)
 	requireNoError(t, err, "writing deleted_at")
 }
+
+func TestGetSessionForIncremental(t *testing.T) {
+	d := testDB(t)
+
+	s := Session{
+		ID:               "codex:inc-test",
+		Project:          "my-project",
+		Machine:          "test",
+		Agent:            "codex",
+		FirstMessage:     Ptr("hello world"),
+		StartedAt:        Ptr("2024-01-15T10:00:00Z"),
+		EndedAt:          Ptr("2024-01-15T10:30:00Z"),
+		MessageCount:     5,
+		UserMessageCount: 2,
+		FilePath:         Ptr("/tmp/sessions/test.jsonl"),
+		FileSize:         Ptr(int64(4096)),
+		FileMtime:        Ptr(int64(999)),
+	}
+	requireNoError(t, d.UpsertSession(s), "upsert")
+
+	t.Run("found", func(t *testing.T) {
+		info, ok := d.GetSessionForIncremental(
+			"/tmp/sessions/test.jsonl",
+		)
+		if !ok {
+			t.Fatal("expected to find session")
+		}
+		if info.ID != "codex:inc-test" {
+			t.Errorf("ID = %q, want codex:inc-test", info.ID)
+		}
+		if info.FileSize != 4096 {
+			t.Errorf("FileSize = %d, want 4096", info.FileSize)
+		}
+		if info.MsgCount != 5 {
+			t.Errorf("MsgCount = %d, want 5", info.MsgCount)
+		}
+		if info.UserMsgCount != 2 {
+			t.Errorf("UserMsgCount = %d, want 2",
+				info.UserMsgCount)
+		}
+	})
+
+	t.Run("not_found", func(t *testing.T) {
+		_, ok := d.GetSessionForIncremental("/no/such/file")
+		if ok {
+			t.Error("expected not found")
+		}
+	})
+
+	t.Run("multi_session_bails_out", func(t *testing.T) {
+		// Two sessions sharing the same file_path (Claude
+		// DAG fork) should prevent incremental parsing.
+		path := "/tmp/sessions/forked.jsonl"
+		for _, id := range []string{"fork-main", "fork-1"} {
+			requireNoError(t, d.UpsertSession(Session{
+				ID:       id,
+				Agent:    "claude",
+				FilePath: Ptr(path),
+				FileSize: Ptr(int64(8192)),
+			}), "upsert "+id)
+		}
+		_, ok := d.GetSessionForIncremental(path)
+		if ok {
+			t.Error(
+				"expected false for multi-session file",
+			)
+		}
+	})
+}
+
+func TestUpdateSessionIncremental(t *testing.T) {
+	d := testDB(t)
+
+	// Insert a session with all fields populated.
+	s := Session{
+		ID:               "inc-update",
+		Project:          "my-project",
+		Machine:          "test",
+		Agent:            "codex",
+		FirstMessage:     Ptr("hello"),
+		StartedAt:        Ptr("2024-01-15T10:00:00Z"),
+		MessageCount:     3,
+		UserMessageCount: 1,
+		ParentSessionID:  Ptr("parent-1"),
+		RelationshipType: "continuation",
+		FilePath:         Ptr("/tmp/sessions/update.jsonl"),
+		FileSize:         Ptr(int64(1024)),
+		FileMtime:        Ptr(int64(100)),
+		FileHash:         Ptr("abc123"),
+	}
+	requireNoError(t, d.UpsertSession(s), "upsert")
+
+	// Incremental update: bump counts and file metadata.
+	ended := "2024-01-15T10:30:00Z"
+	err := d.UpdateSessionIncremental(
+		"inc-update", &ended, 7, 3, 2048, 200,
+	)
+	requireNoError(t, err, "incremental update")
+
+	// Verify updated fields changed.
+	got, err := d.GetSessionFull(
+		context.Background(), "inc-update",
+	)
+	requireNoError(t, err, "get session")
+	if got.MessageCount != 7 {
+		t.Errorf("MessageCount = %d, want 7",
+			got.MessageCount)
+	}
+	if got.UserMessageCount != 3 {
+		t.Errorf("UserMessageCount = %d, want 3",
+			got.UserMessageCount)
+	}
+	if got.EndedAt == nil || *got.EndedAt != ended {
+		t.Errorf("EndedAt = %v, want %q", got.EndedAt, ended)
+	}
+	if got.FileSize == nil || *got.FileSize != 2048 {
+		t.Errorf("FileSize = %v, want 2048", got.FileSize)
+	}
+
+	// Verify preserved fields were NOT cleared.
+	if got.FirstMessage == nil || *got.FirstMessage != "hello" {
+		t.Errorf("FirstMessage cleared: %v", got.FirstMessage)
+	}
+	if got.Project != "my-project" {
+		t.Errorf("Project cleared: %q", got.Project)
+	}
+	if got.ParentSessionID == nil ||
+		*got.ParentSessionID != "parent-1" {
+		t.Errorf("ParentSessionID cleared: %v",
+			got.ParentSessionID)
+	}
+	if got.RelationshipType != "continuation" {
+		t.Errorf("RelationshipType cleared: %q",
+			got.RelationshipType)
+	}
+	if got.FileHash == nil || *got.FileHash != "abc123" {
+		t.Errorf("FileHash cleared: %v", got.FileHash)
+	}
+}
