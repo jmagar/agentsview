@@ -1047,7 +1047,9 @@ func (e *Engine) collectAndBatch(
 		stats.filesOK++
 
 		if r.incremental != nil {
-			e.writeIncremental(r.incremental)
+			if err := e.writeIncremental(r.incremental); err != nil {
+				log.Printf("%v", err)
+			}
 			stats.RecordSynced(1)
 			progress.MessagesIndexed += len(
 				r.incremental.msgs,
@@ -1785,7 +1787,9 @@ func (e *Engine) writeBatch(batch []pendingWrite) {
 // session metadata without overwriting columns that are not
 // recomputed during incremental parsing (e.g. file_hash,
 // parent_session_id, relationship_type).
-func (e *Engine) writeIncremental(inc *incrementalUpdate) {
+func (e *Engine) writeIncremental(
+	inc *incrementalUpdate,
+) error {
 	dbMsgs := toDBMessages(
 		pendingWrite{
 			sess: parser.ParsedSession{ID: inc.sessionID},
@@ -1812,24 +1816,23 @@ func (e *Engine) writeIncremental(inc *incrementalUpdate) {
 	if err := e.writeMessages(
 		inc.sessionID, dbMsgs,
 	); err != nil {
-		log.Printf(
-			"incremental messages %s: %v",
+		return fmt.Errorf(
+			"incremental messages %s: %w",
 			inc.sessionID, err,
 		)
-		return
 	}
 
-	err := e.db.UpdateSessionIncremental(
+	if err := e.db.UpdateSessionIncremental(
 		inc.sessionID, endedAt,
 		msgCount, userMsgCount,
 		inc.fileSize, inc.fileMtime,
-	)
-	if err != nil {
-		log.Printf(
-			"incremental update %s: %v",
+	); err != nil {
+		return fmt.Errorf(
+			"incremental update %s: %w",
 			inc.sessionID, err,
 		)
 	}
+	return nil
 }
 
 // writeMessages uses an incremental append when possible.
@@ -2081,8 +2084,7 @@ func (e *Engine) SyncSingleSession(sessionID string) error {
 	// Handle incremental updates from processFile (e.g.
 	// append-only JSONL that was already synced).
 	if res.incremental != nil {
-		e.writeIncremental(res.incremental)
-		return nil
+		return e.writeIncremental(res.incremental)
 	}
 
 	// For Codex, processFile uses includeExec=false which may
