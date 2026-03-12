@@ -1231,8 +1231,9 @@ func (e *Engine) processClaude(
 
 	// Try incremental parse for append-only JSONL files
 	// that have already been synced.
-	if res, ok := e.tryIncrementalClaude(
-		file, info,
+	if res, ok := e.tryIncrementalJSONL(
+		file, info, parser.AgentClaude,
+		parser.ParseClaudeSessionFrom,
 	); ok {
 		return res
 	}
@@ -1269,12 +1270,23 @@ func (e *Engine) processClaude(
 	return processResult{results: results}
 }
 
-// tryIncrementalClaude attempts an incremental parse of a
-// Claude JSONL file by reading only bytes appended since the
-// last sync. Returns (result, true) on success, or
+// incrementalParseFunc reads new JSONL lines from a file
+// starting at the given byte offset with the given starting
+// ordinal. Returns parsed messages, the latest timestamp
+// (endedAt), and any error.
+type incrementalParseFunc func(
+	path string, offset int64, startOrdinal int,
+) ([]parser.ParsedMessage, time.Time, error)
+
+// tryIncrementalJSONL attempts an incremental parse of an
+// append-only JSONL file by reading only bytes appended since
+// the last sync. Returns (result, true) on success, or
 // (zero, false) to fall through to a full parse.
-func (e *Engine) tryIncrementalClaude(
-	file parser.DiscoveredFile, info os.FileInfo,
+func (e *Engine) tryIncrementalJSONL(
+	file parser.DiscoveredFile,
+	info os.FileInfo,
+	agent parser.AgentType,
+	parseFn incrementalParseFunc,
 ) (processResult, bool) {
 	inc, ok := e.db.GetSessionForIncremental(file.Path)
 	if !ok || inc.FileSize <= 0 {
@@ -1291,13 +1303,13 @@ func (e *Engine) tryIncrementalClaude(
 		return processResult{}, false
 	}
 
-	newMsgs, endedAt, err := parser.ParseClaudeSessionFrom(
+	newMsgs, endedAt, err := parseFn(
 		file.Path, inc.FileSize, maxOrd+1,
 	)
 	if err != nil {
 		log.Printf(
-			"incremental claude %s: %v (full parse)",
-			file.Path, err,
+			"incremental %s %s: %v (full parse)",
+			agent, file.Path, err,
 		)
 		return processResult{}, false
 	}
@@ -1318,7 +1330,7 @@ func (e *Engine) tryIncrementalClaude(
 		ID:               inc.ID,
 		Project:          inc.Project,
 		Machine:          e.machine,
-		Agent:            parser.AgentClaude,
+		Agent:            agent,
 		FirstMessage:     inc.FirstMessage,
 		StartedAt:        startedAt,
 		EndedAt:          endedAt,
@@ -1332,9 +1344,9 @@ func (e *Engine) tryIncrementalClaude(
 	}
 
 	log.Printf(
-		"incremental claude %s: %d new message(s) "+
+		"incremental %s %s: %d new message(s) "+
 			"from offset %d",
-		inc.ID, len(newMsgs), inc.FileSize,
+		agent, inc.ID, len(newMsgs), inc.FileSize,
 	)
 
 	return processResult{
@@ -1356,8 +1368,15 @@ func (e *Engine) processCodex(
 
 	// Try incremental parse for append-only JSONL files
 	// that have already been synced.
-	if res, ok := e.tryIncrementalCodex(
-		file, info,
+	codexParseFn := func(
+		path string, offset int64, startOrd int,
+	) ([]parser.ParsedMessage, time.Time, error) {
+		return parser.ParseCodexSessionFrom(
+			path, offset, startOrd, false,
+		)
+	}
+	if res, ok := e.tryIncrementalJSONL(
+		file, info, parser.AgentCodex, codexParseFn,
 	); ok {
 		return res
 	}
@@ -1382,83 +1401,6 @@ func (e *Engine) processCodex(
 			{Session: *sess, Messages: msgs},
 		},
 	}
-}
-
-// tryIncrementalCodex attempts an incremental parse of a
-// Codex JSONL file by reading only bytes appended since the
-// last sync. Returns (result, true) on success, or
-// (zero, false) to fall through to a full parse.
-func (e *Engine) tryIncrementalCodex(
-	file parser.DiscoveredFile, info os.FileInfo,
-) (processResult, bool) {
-	inc, ok := e.db.GetSessionForIncremental(file.Path)
-	if !ok || inc.FileSize <= 0 {
-		return processResult{}, false
-	}
-
-	currentSize := info.Size()
-	if currentSize <= inc.FileSize {
-		return processResult{}, false
-	}
-
-	maxOrd := e.db.MaxOrdinal(inc.ID)
-	if maxOrd < 0 {
-		return processResult{}, false
-	}
-
-	newMsgs, endedAt, err := parser.ParseCodexSessionFrom(
-		file.Path, inc.FileSize, maxOrd+1, false,
-	)
-	if err != nil {
-		log.Printf(
-			"incremental codex %s: %v (full parse)",
-			file.Path, err,
-		)
-		return processResult{}, false
-	}
-
-	if len(newMsgs) == 0 {
-		return processResult{skip: true}, true
-	}
-
-	// Parse startedAt back from DB string.
-	var startedAt time.Time
-	if inc.StartedAt != "" {
-		startedAt, _ = time.Parse(
-			time.RFC3339Nano, inc.StartedAt,
-		)
-	}
-
-	newUserCount := countUserMsgs(newMsgs)
-	sess := parser.ParsedSession{
-		ID:               inc.ID,
-		Project:          inc.Project,
-		Machine:          e.machine,
-		Agent:            parser.AgentCodex,
-		FirstMessage:     inc.FirstMessage,
-		StartedAt:        startedAt,
-		EndedAt:          endedAt,
-		MessageCount:     inc.MsgCount + len(newMsgs),
-		UserMessageCount: inc.UserMsgCount + newUserCount,
-		File: parser.FileInfo{
-			Path:  file.Path,
-			Size:  currentSize,
-			Mtime: info.ModTime().UnixNano(),
-		},
-	}
-
-	log.Printf(
-		"incremental codex %s: %d new message(s) "+
-			"from offset %d",
-		inc.ID, len(newMsgs), inc.FileSize,
-	)
-
-	return processResult{
-		results: []parser.ParseResult{
-			{Session: sess, Messages: newMsgs},
-		},
-		appendOnly: true,
-	}, true
 }
 
 func (e *Engine) processCopilot(
