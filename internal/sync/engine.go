@@ -895,8 +895,9 @@ func (e *Engine) syncAllLocked(
 			if ctx.Err() != nil {
 				break
 			}
-			e.writeSessionFull(pw)
-			ocWritten++
+			if e.writeSessionFull(pw) {
+				ocWritten++
+			}
 		}
 		stats.RecordSynced(ocWritten)
 		if verbose {
@@ -1947,7 +1948,7 @@ func (e *Engine) writeMessages(
 // delete+reinsert of its messages. Used by explicit
 // single-session re-syncs where existing content may have
 // changed (not just appended).
-func (e *Engine) writeSessionFull(pw pendingWrite) {
+func (e *Engine) writeSessionFull(pw pendingWrite) bool {
 	msgs := toDBMessages(pw, e.blockedResultCategories)
 	s := toDBSession(pw)
 	s.MessageCount, s.UserMessageCount =
@@ -1960,7 +1961,7 @@ func (e *Engine) writeSessionFull(pw pendingWrite) {
 		} else {
 			log.Printf("upsert session %s: %v", s.ID, err)
 		}
-		return
+		return false
 	}
 	if err := e.db.ReplaceSessionMessages(
 		pw.sess.ID, msgs,
@@ -1969,7 +1970,9 @@ func (e *Engine) writeSessionFull(pw pendingWrite) {
 			"replace messages for %s: %v",
 			pw.sess.ID, err,
 		)
+		return false
 	}
+	return true
 }
 
 // toDBSession converts a pendingWrite to a db.Session.
