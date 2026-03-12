@@ -53,7 +53,7 @@ func (s *Server) sessionMonitor(
 		defer close(ch)
 
 		// Seed initial state from the database.
-		lastCount, _ := s.db.GetSessionMessageCount(
+		lastCount, lastDBMtime, _ := s.db.GetSessionVersion(
 			sessionID,
 		)
 
@@ -76,6 +76,7 @@ func (s *Server) sessionMonitor(
 				changed := s.checkDBForChanges(
 					sessionID,
 					&lastCount,
+					&lastDBMtime,
 					&sourcePath,
 					&lastFileMtime,
 					&fileMtimeChangedAt,
@@ -94,21 +95,27 @@ func (s *Server) sessionMonitor(
 }
 
 // checkDBForChanges polls the database for a session's
-// message_count. If the count changed, it returns true.
-// As a fallback, it monitors file mtime and triggers a
-// direct sync when the watcher hasn't updated the DB.
+// message_count and file_mtime. If either changed, it
+// returns true. As a fallback, it monitors source file
+// mtime and triggers a direct sync when the watcher
+// hasn't updated the DB.
 func (s *Server) checkDBForChanges(
 	sessionID string,
 	lastCount *int,
+	lastDBMtime *int64,
 	sourcePath *string,
 	lastFileMtime *int64,
 	fileMtimeChangedAt *time.Time,
 ) bool {
-	// Primary: check if the DB has new data.
-	if count, ok := s.db.GetSessionMessageCount(
+	// Primary: check if the DB has new data (message count
+	// or file_mtime changed, covering both message appends
+	// and metadata-only updates like progress events).
+	if count, dbMtime, ok := s.db.GetSessionVersion(
 		sessionID,
-	); ok && count != *lastCount {
+	); ok && (count != *lastCount ||
+		dbMtime != *lastDBMtime) {
 		*lastCount = count
+		*lastDBMtime = dbMtime
 		// DB was updated; clear any pending fallback.
 		*fileMtimeChangedAt = time.Time{}
 		return true
@@ -158,10 +165,12 @@ func (s *Server) checkDBForChanges(
 			return false
 		}
 		// Re-check the DB after syncing.
-		if count, ok := s.db.GetSessionMessageCount(
+		if count, dbMtime, ok := s.db.GetSessionVersion(
 			sessionID,
-		); ok && count != *lastCount {
+		); ok && (count != *lastCount ||
+			dbMtime != *lastDBMtime) {
 			*lastCount = count
+			*lastDBMtime = dbMtime
 			return true
 		}
 	}

@@ -587,6 +587,22 @@ func (db *DB) GetSessionMessageCount(
 	return count, true
 }
 
+// GetSessionVersion returns the message count and file mtime
+// for change detection in SSE watchers.
+func (db *DB) GetSessionVersion(
+	id string,
+) (count int, fileMtime int64, ok bool) {
+	err := db.getReader().QueryRow(
+		"SELECT message_count, COALESCE(file_mtime, 0)"+
+			" FROM sessions WHERE id = ?",
+		id,
+	).Scan(&count, &fileMtime)
+	if err != nil {
+		return 0, 0, false
+	}
+	return count, fileMtime, true
+}
+
 // IncrementalInfo holds the data needed for incremental
 // re-parsing of an append-only session file.
 type IncrementalInfo struct {

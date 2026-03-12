@@ -39,10 +39,12 @@ func TestCheckDBForChanges_FileDisappears(t *testing.T) {
 	var lastMtime int64 = 12345
 	var mchanged time.Time
 	var lastCount int
+	var lastDBMtime int64
 
 	changed := srv.checkDBForChanges(
 		"test-session",
 		&lastCount,
+		&lastDBMtime,
 		&path,
 		&lastMtime,
 		&mchanged,
