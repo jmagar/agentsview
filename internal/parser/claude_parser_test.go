@@ -372,15 +372,23 @@ func TestParseClaudeSessionFrom_DAGDetected(
 	require.NoError(t, err)
 	offset := info.Size()
 
-	// Append a line with a uuid field (DAG structure).
-	dagLine := `{"type":"user","uuid":"abc-123",` +
+	// Append two entries that form a fork: both have the
+	// same parentUuid but different uuids.
+	fork1 := `{"type":"user","uuid":"child-1",` +
+		`"parentUuid":"root-1",` +
 		`"timestamp":"` + tsEarlyS5 +
-		`","message":{"content":"fork"}}` + "\n"
+		`","message":{"content":"branch A"}}` + "\n"
+	fork2 := `{"type":"assistant","uuid":"child-2",` +
+		`"parentUuid":"root-1",` +
+		`"timestamp":"` + tsLate +
+		`","message":{"content":[` +
+		`{"type":"text","text":"branch B"}]}}` + "\n"
+
 	f, err := os.OpenFile(
 		path, os.O_APPEND|os.O_WRONLY, 0o644,
 	)
 	require.NoError(t, err)
-	_, err = f.WriteString(dagLine)
+	_, err = f.WriteString(fork1 + fork2)
 	require.NoError(t, err)
 	require.NoError(t, f.Close())
 
@@ -388,6 +396,53 @@ func TestParseClaudeSessionFrom_DAGDetected(
 		path, offset, 1,
 	)
 	assert.ErrorIs(t, err, ErrDAGDetected)
+}
+
+func TestParseClaudeSessionFrom_LinearUUID(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("hello", tsEarly),
+	)
+	path := createTestFile(
+		t, "inc-linear-uuid.jsonl", initial,
+	)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	offset := info.Size()
+
+	// Append UUID-bearing entries that form a linear chain
+	// (each entry's parentUuid == previous entry's uuid).
+	// This should NOT trigger ErrDAGDetected.
+	line1 := `{"type":"user","uuid":"u1",` +
+		`"parentUuid":"pre-existing",` +
+		`"timestamp":"` + tsEarlyS5 +
+		`","message":{"content":"msg1"}}` + "\n"
+	line2 := `{"type":"assistant","uuid":"u2",` +
+		`"parentUuid":"u1",` +
+		`"timestamp":"` + tsLate +
+		`","message":{"content":[` +
+		`{"type":"text","text":"reply"}]}}` + "\n"
+
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	require.NoError(t, err)
+	_, err = f.WriteString(line1 + line2)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	newMsgs, endedAt, _, err := ParseClaudeSessionFrom(
+		path, offset, 1,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 2, len(newMsgs))
+	assert.Equal(t, 1, newMsgs[0].Ordinal)
+	assert.Equal(t, 2, newMsgs[1].Ordinal)
+	assert.False(t, endedAt.IsZero())
 }
 
 func loadFixture(t *testing.T, name string) string {

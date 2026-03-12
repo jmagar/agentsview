@@ -1338,16 +1338,30 @@ func (e *Engine) tryIncrementalJSONL(
 		return processResult{}, false
 	}
 
-	if len(newMsgs) == 0 {
-		return processResult{skip: true}, true
-	}
-
-	newUserCount := countUserMsgs(newMsgs)
-
 	// Use the offset through the last valid JSON line, not
 	// info.Size(), so partial lines at EOF are retried on
 	// the next sync.
 	newOffset := inc.FileSize + consumed
+
+	if len(newMsgs) == 0 {
+		// No new messages, but advance the offset past
+		// non-message lines (progress events, metadata)
+		// so they aren't re-read on every sync.
+		if consumed > 0 {
+			return processResult{
+				incremental: &incrementalUpdate{
+					sessionID:    inc.ID,
+					msgCount:     inc.MsgCount,
+					userMsgCount: inc.UserMsgCount,
+					fileSize:     newOffset,
+					fileMtime:    info.ModTime().UnixNano(),
+				},
+			}, true
+		}
+		return processResult{skip: true}, true
+	}
+
+	newUserCount := countUserMsgs(newMsgs)
 
 	log.Printf(
 		"incremental %s %s: %d new message(s) "+
@@ -1733,6 +1747,14 @@ func (e *Engine) writeBatch(batch []pendingWrite) {
 		s := toDBSession(pw)
 		s.MessageCount, s.UserMessageCount =
 			postFilterCounts(msgs)
+
+		// UpsertSession first: the session row must exist
+		// before messages can be inserted (FK constraint).
+		// This is safe because writeBatch runs full parses
+		// that always recompute all columns. For
+		// incremental updates (writeIncremental), messages
+		// are written first since the session already
+		// exists.
 		if err := e.db.UpsertSession(s); err != nil {
 			if errors.Is(err, db.ErrSessionExcluded) {
 				if pw.sess.File.Path != "" {
@@ -1746,8 +1768,12 @@ func (e *Engine) writeBatch(batch []pendingWrite) {
 			log.Printf("upsert session %s: %v", s.ID, err)
 			continue
 		}
-		if err := e.writeMessages(pw.sess.ID, msgs); err != nil {
+
+		if err := e.writeMessages(
+			pw.sess.ID, msgs,
+		); err != nil {
 			log.Printf("%v", err)
+			continue
 		}
 	}
 }
