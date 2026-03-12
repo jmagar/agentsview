@@ -2,27 +2,49 @@ package server
 
 import (
 	"context"
-	"errors"
 	"log"
 	"net/http"
 	"os"
-	"syscall"
 	"time"
 
 	syncpkg "github.com/wesm/agentsview/internal/sync"
 )
 
+// statMtime returns the file's modification time in
+// nanoseconds, or 0 if the file cannot be stat'd.
+func statMtime(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.ModTime().UnixNano()
+}
+
 const (
-	// pollInterval is how often the file watcher checks for changes.
+	// pollInterval is how often the session monitor checks
+	// the database for changes.
 	pollInterval = 1500 * time.Millisecond
-	// heartbeatInterval is how often a keepalive is sent to the
-	// client. Expressed as a multiple of pollInterval (~30s).
+	// heartbeatInterval is how often a keepalive is sent to
+	// the client. Expressed as a multiple of pollInterval
+	// (~30s).
 	heartbeatTicks = 20
+	// syncFallbackDelay is how long to wait after detecting
+	// a file mtime change before attempting a direct sync.
+	// This gives the file watcher time to process the change
+	// through the normal SyncPaths pipeline.
+	syncFallbackDelay = 5 * time.Second
 )
 
-// sessionMonitor polls a session's source file for changes and
-// syncs on modification. It sends on the returned channel after
-// each successful sync. The channel is closed when ctx is done.
+// sessionMonitor polls the database for session changes and
+// signals the returned channel when the message count changes.
+// This is decoupled from file I/O — the file watcher handles
+// syncing files to the database, and this monitor detects the
+// resulting DB changes.
+//
+// As a fallback for sessions the file watcher skips (e.g.
+// codex_exec sessions), it also monitors the source file's
+// mtime and triggers a direct sync when the DB hasn't been
+// updated within syncFallbackDelay.
 func (s *Server) sessionMonitor(
 	ctx context.Context, sessionID string,
 ) <-chan struct{} {
@@ -30,12 +52,17 @@ func (s *Server) sessionMonitor(
 	go func() {
 		defer close(ch)
 
+		// Seed initial state from the database.
+		lastCount, _ := s.db.GetSessionMessageCount(
+			sessionID,
+		)
+
+		// Track file mtime for fallback sync.
 		sourcePath := s.engine.FindSourceFile(sessionID)
-		var lastMtime int64
+		var lastFileMtime int64
+		var fileMtimeChangedAt time.Time
 		if sourcePath != "" {
-			if info, err := os.Stat(sourcePath); err == nil {
-				lastMtime = info.ModTime().UnixNano()
-			}
+			lastFileMtime = statMtime(sourcePath)
 		}
 
 		ticker := time.NewTicker(pollInterval)
@@ -46,8 +73,12 @@ func (s *Server) sessionMonitor(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				changed := s.checkAndSync(
-					sessionID, &sourcePath, &lastMtime,
+				changed := s.checkDBForChanges(
+					sessionID,
+					&lastCount,
+					&sourcePath,
+					&lastFileMtime,
+					&fileMtimeChangedAt,
 				)
 				if changed {
 					select {
@@ -62,66 +93,80 @@ func (s *Server) sessionMonitor(
 	return ch
 }
 
-// checkAndSync polls the source file and syncs if modified.
-// It updates sourcePath and lastMtime through the pointers.
-// Returns true if the session was synced successfully.
-func (s *Server) checkAndSync(
+// checkDBForChanges polls the database for a session's
+// message_count. If the count changed, it returns true.
+// As a fallback, it monitors file mtime and triggers a
+// direct sync when the watcher hasn't updated the DB.
+func (s *Server) checkDBForChanges(
 	sessionID string,
+	lastCount *int,
 	sourcePath *string,
-	lastMtime *int64,
+	lastFileMtime *int64,
+	fileMtimeChangedAt *time.Time,
 ) bool {
-	if *sourcePath != "" {
-		return s.syncIfModified(
-			sessionID, sourcePath, lastMtime,
-		)
+	// Primary: check if the DB has new data.
+	if count, ok := s.db.GetSessionMessageCount(
+		sessionID,
+	); ok && count != *lastCount {
+		*lastCount = count
+		// DB was updated; clear any pending fallback.
+		*fileMtimeChangedAt = time.Time{}
+		return true
 	}
-	// Try to re-resolve a previously unknown path
-	*sourcePath = s.engine.FindSourceFile(sessionID)
-	if *sourcePath == "" {
-		return false
-	}
-	info, err := os.Stat(*sourcePath)
-	if err != nil {
-		return false
-	}
-	*lastMtime = info.ModTime().UnixNano()
-	if err := s.engine.SyncSingleSession(sessionID); err != nil {
-		log.Printf("watch sync error: %v", err)
-		return false
-	}
-	return true
-}
 
-// syncIfModified checks whether the file at path has been
-// modified since lastMtime. If so, it syncs and updates
-// lastMtime. On not-exist or invalid-path stat errors, clear cache;
-// transient errors preserve cache so checkAndSync can re-try.
-// Returns true on a successful sync.
-func (s *Server) syncIfModified(
-	sessionID string,
-	sourcePath *string,
-	lastMtime *int64,
-) bool {
-	info, err := os.Stat(*sourcePath)
-	if err != nil {
-		// Clear cache if the file is gone or the path is invalid (e.g. ENOTDIR).
-		// Transient errors (like permission denied) preserve the cache.
-		if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
-			*sourcePath = ""
-			*lastMtime = 0
+	// Track file mtime for the fallback path.
+	if *sourcePath == "" {
+		*sourcePath = s.engine.FindSourceFile(sessionID)
+		if *sourcePath == "" {
+			return false
 		}
+		*lastFileMtime = statMtime(*sourcePath)
+		// Source file (re-)resolved — trigger fallback sync
+		// immediately since content likely differs from DB.
+		past := time.Now().Add(-syncFallbackDelay)
+		*fileMtimeChangedAt = past
+	}
+
+	mtime := statMtime(*sourcePath)
+	if mtime == 0 {
+		// File disappeared; try to re-resolve later.
+		*sourcePath = ""
+		*lastFileMtime = 0
+		*fileMtimeChangedAt = time.Time{}
 		return false
 	}
-	mtime := info.ModTime().UnixNano()
-	if mtime <= *lastMtime {
-		return false
+
+	if mtime != *lastFileMtime {
+		*lastFileMtime = mtime
+		if fileMtimeChangedAt.IsZero() {
+			now := time.Now()
+			*fileMtimeChangedAt = now
+		}
 	}
-	*lastMtime = mtime
-	if err := s.engine.SyncSingleSession(sessionID); err != nil {
-		log.Printf("watch sync error: %v", err)
-		return false
+
+	// Fallback: if the file changed but the DB hasn't been
+	// updated within syncFallbackDelay, trigger a direct
+	// sync. This handles sessions the watcher skips (e.g.
+	// codex_exec).
+	if !fileMtimeChangedAt.IsZero() &&
+		time.Since(*fileMtimeChangedAt) >= syncFallbackDelay {
+		*fileMtimeChangedAt = time.Time{}
+		if err := s.engine.SyncSingleSession(
+			sessionID,
+		); err != nil {
+			log.Printf("watch sync error: %v", err)
+			return false
+		}
+		// Re-check the DB after syncing.
+		if count, ok := s.db.GetSessionMessageCount(
+			sessionID,
+		); ok && count != *lastCount {
+			*lastCount = count
+			return true
+		}
 	}
-	return true
+
+	return false
 }
 
 func (s *Server) handleWatchSession(

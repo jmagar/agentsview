@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -326,4 +327,130 @@ func TestParseCodexSession_EdgeCases(t *testing.T) {
 		assert.Equal(t, 1, len(msgs))
 		assert.Equal(t, "unknown", sess.Project)
 	})
+}
+
+func TestParseCodexSessionFrom_Incremental(t *testing.T) {
+	t.Parallel()
+
+	// Build initial content with session_meta + one message.
+	initial := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(
+			"inc-1", "/projects/api",
+			"codex_cli_rs", tsEarly,
+		),
+		testjsonl.CodexMsgJSON("user", "hello", tsEarlyS1),
+	)
+
+	path := createTestFile(t, "incremental.jsonl", initial)
+
+	// Full parse to get baseline.
+	sess, msgs, err := ParseCodexSession(path, "local", false)
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	assert.Equal(t, "codex:inc-1", sess.ID)
+	assert.Equal(t, 1, len(msgs))
+	assert.Equal(t, 0, msgs[0].Ordinal)
+
+	// Record the file size as the incremental offset.
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	offset := info.Size()
+
+	// Append new messages.
+	appended := testjsonl.JoinJSONL(
+		testjsonl.CodexMsgJSON(
+			"assistant", "world", tsEarlyS5,
+		),
+		testjsonl.CodexMsgJSON(
+			"user", "thanks", tsLate,
+		),
+	)
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	require.NoError(t, err)
+	_, err = f.WriteString(appended)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	// Incremental parse from the offset.
+	newMsgs, endedAt, err := ParseCodexSessionFrom(
+		path, offset, 1, false,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 2, len(newMsgs))
+
+	// Ordinals start from startOrdinal=1.
+	assert.Equal(t, 1, newMsgs[0].Ordinal)
+	assert.Equal(t, RoleAssistant, newMsgs[0].Role)
+	assert.Contains(t, newMsgs[0].Content, "world")
+
+	assert.Equal(t, 2, newMsgs[1].Ordinal)
+	assert.Equal(t, RoleUser, newMsgs[1].Role)
+
+	// endedAt reflects the latest timestamp.
+	assert.False(t, endedAt.IsZero())
+}
+
+func TestParseCodexSessionFrom_SkipsSessionMeta(t *testing.T) {
+	t.Parallel()
+
+	// File where session_meta appears after the offset
+	// (shouldn't happen in practice but should be skipped).
+	initial := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(
+			"meta-2", "/tmp", "codex_cli_rs", tsEarly,
+		),
+		testjsonl.CodexMsgJSON("user", "first", tsEarlyS1),
+	)
+	path := createTestFile(t, "meta-skip.jsonl", initial)
+
+	info, _ := os.Stat(path)
+	offset := info.Size()
+
+	// Append a duplicate session_meta + a message.
+	extra := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(
+			"meta-2", "/tmp", "codex_cli_rs", tsEarlyS5,
+		),
+		testjsonl.CodexMsgJSON(
+			"assistant", "reply", tsLate,
+		),
+	)
+	f, _ := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	f.WriteString(extra)
+	f.Close()
+
+	newMsgs, _, err := ParseCodexSessionFrom(
+		path, offset, 5, false,
+	)
+	require.NoError(t, err)
+	// Only the assistant message, not the session_meta.
+	assert.Equal(t, 1, len(newMsgs))
+	assert.Equal(t, 5, newMsgs[0].Ordinal)
+}
+
+func TestParseCodexSessionFrom_NoNewData(t *testing.T) {
+	t.Parallel()
+
+	content := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(
+			"empty-1", "/tmp", "codex_cli_rs", tsEarly,
+		),
+		testjsonl.CodexMsgJSON("user", "hi", tsEarlyS1),
+	)
+	path := createTestFile(t, "no-new.jsonl", content)
+
+	info, _ := os.Stat(path)
+	offset := info.Size()
+
+	// Parse from end of file — no new data.
+	newMsgs, endedAt, err := ParseCodexSessionFrom(
+		path, offset, 10, false,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 0, len(newMsgs))
+	assert.True(t, endedAt.IsZero())
 }

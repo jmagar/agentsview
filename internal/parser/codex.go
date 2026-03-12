@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -598,6 +599,59 @@ func ParseCodexSession(
 	}
 
 	return sess, b.messages, nil
+}
+
+// ParseCodexSessionFrom parses only new lines from a Codex
+// JSONL file starting at the given byte offset. Returns only
+// the newly parsed messages (with ordinals starting at
+// startOrdinal) and the latest timestamp seen. Used for
+// incremental re-parsing of large append-only session files.
+func ParseCodexSessionFrom(
+	path string,
+	offset int64,
+	startOrdinal int,
+	includeExec bool,
+) ([]ParsedMessage, time.Time, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, time.Time{},
+			fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, time.Time{},
+			fmt.Errorf("seek %s to %d: %w", path, offset, err)
+	}
+
+	lr := newLineReader(f, maxLineSize)
+	b := newCodexSessionBuilder(includeExec)
+	b.ordinal = startOrdinal
+
+	for {
+		line, ok := lr.next()
+		if !ok {
+			break
+		}
+		if !gjson.Valid(line) {
+			continue
+		}
+		// Skip session_meta — already processed in the
+		// initial full parse.
+		if gjson.Get(line, "type").Str == codexTypeSessionMeta {
+			continue
+		}
+		b.processLine(line)
+	}
+
+	if err := lr.Err(); err != nil {
+		return nil, time.Time{}, fmt.Errorf(
+			"reading codex %s from offset %d: %w",
+			path, offset, err,
+		)
+	}
+
+	return b.messages, b.endedAt, nil
 }
 
 func isCodexSystemMessage(content string) bool {

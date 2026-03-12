@@ -198,6 +198,123 @@ func TestParseClaudeSession_ParentSessionID(t *testing.T) {
 	})
 }
 
+func TestParseClaudeSessionFrom_Incremental(t *testing.T) {
+	t.Parallel()
+
+	// Build initial content: user + assistant.
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("hello world", tsEarly),
+		testjsonl.ClaudeAssistantJSON("hi there", tsEarlyS1),
+	)
+
+	path := createTestFile(t, "inc-claude.jsonl", initial)
+
+	// Full parse to get baseline.
+	results, err := ParseClaudeSession(path, "proj", "local")
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+	assert.Equal(t, 2, len(results[0].Messages))
+	assert.Equal(t, 0, results[0].Messages[0].Ordinal)
+	assert.Equal(t, 1, results[0].Messages[1].Ordinal)
+
+	// Record file size as the incremental offset.
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	offset := info.Size()
+
+	// Append new messages.
+	appended := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("follow up", tsEarlyS5),
+		testjsonl.ClaudeAssistantJSON("got it", tsLate),
+	)
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	require.NoError(t, err)
+	_, err = f.WriteString(appended)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	// Incremental parse from offset.
+	newMsgs, endedAt, err := ParseClaudeSessionFrom(
+		path, offset, 2,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 2, len(newMsgs))
+
+	// Ordinals continue from startOrdinal=2.
+	assert.Equal(t, 2, newMsgs[0].Ordinal)
+	assert.Equal(t, RoleUser, newMsgs[0].Role)
+	assert.Contains(t, newMsgs[0].Content, "follow up")
+
+	assert.Equal(t, 3, newMsgs[1].Ordinal)
+	assert.Equal(t, RoleAssistant, newMsgs[1].Role)
+	assert.Contains(t, newMsgs[1].Content, "got it")
+
+	assert.False(t, endedAt.IsZero())
+}
+
+func TestParseClaudeSessionFrom_SkipsNonMessages(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	// Initial content with a "system" type line mixed in.
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("first", tsEarly),
+	)
+	path := createTestFile(
+		t, "inc-claude-skip.jsonl", initial,
+	)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	offset := info.Size()
+
+	// Append a system line followed by a real message.
+	appended := `{"type":"system","timestamp":"` +
+		tsEarlyS5 + `","message":{}}` + "\n" +
+		testjsonl.ClaudeAssistantJSON("response", tsLate) +
+		"\n"
+	f, err := os.OpenFile(
+		path, os.O_APPEND|os.O_WRONLY, 0o644,
+	)
+	require.NoError(t, err)
+	_, err = f.WriteString(appended)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	newMsgs, _, err := ParseClaudeSessionFrom(
+		path, offset, 1,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(newMsgs))
+	assert.Equal(t, RoleAssistant, newMsgs[0].Role)
+	assert.Equal(t, 1, newMsgs[0].Ordinal)
+}
+
+func TestParseClaudeSessionFrom_NoNewData(t *testing.T) {
+	t.Parallel()
+
+	content := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("only msg", tsEarly),
+	)
+	path := createTestFile(
+		t, "inc-claude-empty.jsonl", content,
+	)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+
+	// Parse from EOF — should return empty.
+	newMsgs, endedAt, err := ParseClaudeSessionFrom(
+		path, info.Size(), 1,
+	)
+	require.NoError(t, err)
+	assert.Empty(t, newMsgs)
+	assert.True(t, endedAt.IsZero())
+}
+
 func loadFixture(t *testing.T, name string) string {
 	t.Helper()
 	path := filepath.Join("testdata", name)

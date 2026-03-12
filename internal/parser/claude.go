@@ -4,6 +4,7 @@ package parser
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -190,6 +191,130 @@ func ParseClaudeSession(
 		parentSessionID, fileInfo, subagentMap,
 		globalStart, globalEnd,
 	)
+}
+
+// ParseClaudeSessionFrom parses only new lines from a Claude
+// JSONL file starting at the given byte offset. Returns only
+// the newly parsed messages (with ordinals starting at
+// startOrdinal) and the latest timestamp. Fork detection is
+// skipped — new entries are processed linearly. Used for
+// incremental re-parsing of append-only session files.
+func ParseClaudeSessionFrom(
+	path string,
+	offset int64,
+	startOrdinal int,
+) ([]ParsedMessage, time.Time, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, time.Time{},
+			fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, time.Time{},
+			fmt.Errorf("seek %s to %d: %w", path, offset, err)
+	}
+
+	lr := newLineReader(f, maxLineSize)
+	var entries []dagEntry
+	lineIndex := startOrdinal
+
+	for {
+		line, ok := lr.next()
+		if !ok {
+			break
+		}
+		if !gjson.Valid(line) {
+			continue
+		}
+
+		entryType := gjson.Get(line, "type").Str
+		if entryType != "user" && entryType != "assistant" {
+			continue
+		}
+
+		ts := extractTimestamp(line)
+		entries = append(entries, dagEntry{
+			entryType: entryType,
+			lineIndex: lineIndex,
+			line:      line,
+			timestamp: ts,
+		})
+		lineIndex++
+	}
+
+	if err := lr.Err(); err != nil {
+		return nil, time.Time{}, fmt.Errorf(
+			"reading claude %s from offset %d: %w",
+			path, offset, err,
+		)
+	}
+
+	if len(entries) == 0 {
+		return nil, time.Time{}, nil
+	}
+
+	msgs, _, endedAt := extractMessagesFrom(
+		entries, startOrdinal,
+	)
+	return msgs, endedAt, nil
+}
+
+// extractMessagesFrom is like extractMessages but uses a
+// custom starting ordinal for incremental parsing.
+func extractMessagesFrom(
+	entries []dagEntry, startOrdinal int,
+) ([]ParsedMessage, time.Time, time.Time) {
+	var (
+		messages  []ParsedMessage
+		startedAt time.Time
+		endedAt   time.Time
+		ordinal   = startOrdinal
+	)
+
+	for _, e := range entries {
+		if !e.timestamp.IsZero() {
+			if startedAt.IsZero() {
+				startedAt = e.timestamp
+			}
+			endedAt = e.timestamp
+		}
+
+		if e.entryType == "user" {
+			if gjson.Get(e.line, "isMeta").Bool() ||
+				gjson.Get(e.line, "isCompactSummary").Bool() {
+				continue
+			}
+		}
+
+		content := gjson.Get(e.line, "message.content")
+		text, hasThinking, hasToolUse, tcs, trs :=
+			ExtractTextContent(content)
+		if strings.TrimSpace(text) == "" && len(trs) == 0 {
+			continue
+		}
+
+		if e.entryType == "user" &&
+			isClaudeSystemMessage(text) {
+			continue
+		}
+
+		messages = append(messages, ParsedMessage{
+			Ordinal:       ordinal,
+			Role:          RoleType(e.entryType),
+			Content:       text,
+			Timestamp:     e.timestamp,
+			HasThinking:   hasThinking,
+			HasToolUse:    hasToolUse,
+			ContentLength: len(text),
+			ToolCalls:     tcs,
+			ToolResults:   trs,
+		})
+		ordinal++
+	}
+
+	return messages, startedAt, endedAt
 }
 
 // parseLinear processes entries sequentially without DAG awareness.

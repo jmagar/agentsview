@@ -572,6 +572,66 @@ func (db *DB) GetSessionFileInfo(
 	return s.Int64, m.Int64, true
 }
 
+// GetSessionMessageCount returns the message_count for a
+// session. Returns (0, false) when the session does not exist.
+func (db *DB) GetSessionMessageCount(
+	id string,
+) (count int, ok bool) {
+	err := db.getReader().QueryRow(
+		"SELECT message_count FROM sessions WHERE id = ?",
+		id,
+	).Scan(&count)
+	if err != nil {
+		return 0, false
+	}
+	return count, true
+}
+
+// IncrementalInfo holds the data needed for incremental
+// re-parsing of an append-only session file.
+type IncrementalInfo struct {
+	ID           string
+	Project      string
+	FirstMessage string
+	StartedAt    string
+	FileSize     int64
+	MsgCount     int
+	UserMsgCount int
+}
+
+// GetSessionForIncremental returns session state needed for
+// incremental parsing, looked up by file_path.
+func (db *DB) GetSessionForIncremental(
+	path string,
+) (*IncrementalInfo, bool) {
+	var info IncrementalInfo
+	var fm, sa sql.NullString
+	var fs sql.NullInt64
+	err := db.getReader().QueryRow(
+		`SELECT id, project, first_message, started_at,
+			file_size, message_count, user_message_count
+		 FROM sessions WHERE file_path = ?
+		 ORDER BY file_mtime DESC LIMIT 1`,
+		path,
+	).Scan(
+		&info.ID, &info.Project, &fm, &sa,
+		&fs, &info.MsgCount, &info.UserMsgCount,
+	)
+	if err != nil {
+		return nil, false
+	}
+	if fm.Valid {
+		info.FirstMessage = fm.String
+	}
+	if sa.Valid {
+		info.StartedAt = sa.String
+	}
+	if fs.Valid {
+		info.FileSize = fs.Int64
+	}
+	return &info, true
+}
+
 // GetFileInfoByPath returns file_size and file_mtime for a
 // session identified by file_path. Used for codex/gemini files
 // where the session ID requires parsing.

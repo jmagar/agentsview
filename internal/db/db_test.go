@@ -4094,3 +4094,61 @@ CREATE TABLE IF NOT EXISTS insights (
 	)
 	requireNoError(t, err, "writing deleted_at")
 }
+
+func TestGetSessionForIncremental(t *testing.T) {
+	d := testDB(t)
+
+	s := Session{
+		ID:               "codex:inc-test",
+		Project:          "my-project",
+		Machine:          "test",
+		Agent:            "codex",
+		FirstMessage:     Ptr("hello world"),
+		StartedAt:        Ptr("2024-01-15T10:00:00Z"),
+		EndedAt:          Ptr("2024-01-15T10:30:00Z"),
+		MessageCount:     5,
+		UserMessageCount: 2,
+		FilePath:         Ptr("/tmp/sessions/test.jsonl"),
+		FileSize:         Ptr(int64(4096)),
+		FileMtime:        Ptr(int64(999)),
+	}
+	requireNoError(t, d.UpsertSession(s), "upsert")
+
+	t.Run("found", func(t *testing.T) {
+		info, ok := d.GetSessionForIncremental(
+			"/tmp/sessions/test.jsonl",
+		)
+		if !ok {
+			t.Fatal("expected to find session")
+		}
+		if info.ID != "codex:inc-test" {
+			t.Errorf("ID = %q, want codex:inc-test", info.ID)
+		}
+		if info.Project != "my-project" {
+			t.Errorf("Project = %q", info.Project)
+		}
+		if info.FirstMessage != "hello world" {
+			t.Errorf("FirstMessage = %q", info.FirstMessage)
+		}
+		if info.StartedAt != "2024-01-15T10:00:00Z" {
+			t.Errorf("StartedAt = %q", info.StartedAt)
+		}
+		if info.FileSize != 4096 {
+			t.Errorf("FileSize = %d, want 4096", info.FileSize)
+		}
+		if info.MsgCount != 5 {
+			t.Errorf("MsgCount = %d, want 5", info.MsgCount)
+		}
+		if info.UserMsgCount != 2 {
+			t.Errorf("UserMsgCount = %d, want 2",
+				info.UserMsgCount)
+		}
+	})
+
+	t.Run("not_found", func(t *testing.T) {
+		_, ok := d.GetSessionForIncremental("/no/such/file")
+		if ok {
+			t.Error("expected not found")
+		}
+	})
+}

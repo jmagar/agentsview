@@ -44,6 +44,7 @@ type testEnv struct {
 	srv       *server.Server
 	handler   http.Handler
 	db        *db.DB
+	engine    *sync.Engine
 	claudeDir string
 	dataDir   string
 }
@@ -151,6 +152,7 @@ func setupWithServerOpts(
 		srv:       srv,
 		handler:   wrappedHandler,
 		db:        database,
+		engine:    engine,
 		claudeDir: claudeDir,
 		dataDir:   dir,
 	}
@@ -2280,6 +2282,10 @@ func TestWatchSession_Events(t *testing.T) {
 		t.Fatalf("writing updated session file: %v", err)
 	}
 
+	// Sync the file to update the DB — in production the
+	// file watcher does this via SyncPaths.
+	engine.SyncPaths([]string{sessionPath})
+
 	te.waitForSSEEvent(t, w, "session_updated", 5*time.Second)
 	cancel()
 	<-done
@@ -2303,7 +2309,7 @@ func TestWatchSession_FileDisappearAndResolve(t *testing.T) {
 	engine.SyncAll(nil)
 
 	ctx, cancel := context.WithTimeout(
-		context.Background(), 10*time.Second,
+		context.Background(), 15*time.Second,
 	)
 	defer cancel()
 
@@ -2326,18 +2332,19 @@ func TestWatchSession_FileDisappearAndResolve(t *testing.T) {
 		t.Fatalf("removing session file: %v", err)
 	}
 
-	// Wait long enough for at least one poll tick to notice
-	// the missing file and clear the cached path.
+	// Wait for at least one poll tick to notice the missing
+	// file and clear the cached path.
 	time.Sleep(2 * time.Second)
 
 	// Recreate the file with updated content at a NEW location
-	// so we verify that FindSourceFile actually re-scans.
+	// so we verify that FindSourceFile re-scans and the
+	// fallback sync picks up the change.
 	updated := content + testjsonl.NewSessionBuilder().
 		AddClaudeAssistant(tsZeroS5, "recovered").
 		String()
 	te.writeProjectFile(t, "moved-proj", "vanish-sess.jsonl", updated)
 
-	te.waitForSSEEvent(t, w, "session_updated", 8*time.Second)
+	te.waitForSSEEvent(t, w, "session_updated", 12*time.Second)
 	cancel()
 	<-done
 }
