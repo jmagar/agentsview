@@ -886,12 +886,15 @@ func (e *Engine) syncAllLocked(
 	// Uses full replace because OpenCode messages can change
 	// in place (streaming updates, tool result pairing).
 	tOC := time.Now()
-	ocPending := e.syncOpenCode()
+	ocPending := e.syncOpenCode(ctx)
 	if len(ocPending) > 0 {
 		stats.TotalSessions += len(ocPending)
 		stats.RecordSynced(len(ocPending))
 		tWrite := time.Now()
 		for _, pw := range ocPending {
+			if ctx.Err() != nil {
+				break
+			}
 			e.writeSessionFull(pw)
 		}
 		if verbose {
@@ -907,6 +910,14 @@ func (e *Engine) syncAllLocked(
 			"opencode sync: %s",
 			time.Since(tOC).Round(time.Millisecond),
 		)
+	}
+
+	if ctx.Err() != nil {
+		stats.Aborted = true
+		e.mu.Lock()
+		e.lastSyncStats = stats
+		e.mu.Unlock()
+		return stats
 	}
 
 	tPersist := time.Now()
@@ -929,19 +940,28 @@ func (e *Engine) syncAllLocked(
 // syncOpenCode syncs sessions from OpenCode SQLite databases.
 // Uses per-session time_updated to detect changes, so only
 // modified sessions are fully parsed. Returns pending writes.
-func (e *Engine) syncOpenCode() []pendingWrite {
+func (e *Engine) syncOpenCode(
+	ctx context.Context,
+) []pendingWrite {
 	var allPending []pendingWrite
 	for _, dir := range e.agentDirs[parser.AgentOpenCode] {
+		if ctx.Err() != nil {
+			break
+		}
 		if dir == "" {
 			continue
 		}
-		allPending = append(allPending, e.syncOneOpenCode(dir)...)
+		allPending = append(
+			allPending, e.syncOneOpenCode(ctx, dir)...,
+		)
 	}
 	return allPending
 }
 
 // syncOneOpenCode handles a single OpenCode directory.
-func (e *Engine) syncOneOpenCode(dir string) []pendingWrite {
+func (e *Engine) syncOneOpenCode(
+	ctx context.Context, dir string,
+) []pendingWrite {
 	dbPath := filepath.Join(dir, "opencode.db")
 
 	metas, err := parser.ListOpenCodeSessionMeta(dbPath)
@@ -968,6 +988,9 @@ func (e *Engine) syncOneOpenCode(dir string) []pendingWrite {
 
 	var pending []pendingWrite
 	for _, sid := range changed {
+		if ctx.Err() != nil {
+			break
+		}
 		sess, msgs, err := parser.ParseOpenCodeSession(
 			dbPath, sid, e.machine,
 		)
@@ -1037,12 +1060,12 @@ func (e *Engine) collectAndBatch(
 
 	var pending []pendingWrite
 
-	for range total {
+	for i := range total {
 		var r syncJob
 		select {
 		case <-ctx.Done():
 			stats.Aborted = true
-			go drainResults(results, total-progress.SessionsDone)
+			drainResults(results, total-i)
 			goto flush
 		case r = <-results:
 		}
