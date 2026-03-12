@@ -1090,6 +1090,14 @@ func (e *Engine) collectAndBatch(
 		}
 
 		if r.err != nil {
+			// Workers emit ctx.Err() for files skipped
+			// after cancellation — treat the same as the
+			// ctx.Done() branch above.
+			if ctx.Err() != nil {
+				stats.Aborted = true
+				drainResults(results, total-i-1)
+				goto flush
+			}
 			stats.RecordFailed()
 			if r.mtime != 0 {
 				e.cacheSkip(r.path, r.mtime)
