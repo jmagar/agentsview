@@ -183,6 +183,7 @@ type SessionFilter struct {
 	MaxMessages     int    // message_count <= N (0 = no filter)
 	MinUserMessages int    // user_message_count >= N (0 = no filter)
 	ExcludeOneShot  bool   // exclude sessions with user_message_count <= 1
+	IncludeChildren bool   // include subagent sessions (for sidebar grouping)
 	Cursor          string // opaque cursor from previous page
 	Limit           int
 }
@@ -197,82 +198,138 @@ type SessionPage struct {
 // buildSessionFilter returns a WHERE clause and args for the
 // non-cursor predicates in SessionFilter.
 func buildSessionFilter(f SessionFilter) (string, []any) {
-	preds := []string{
+	// Base predicates apply to every row.
+	basePreds := []string{
 		"message_count > 0",
-		"relationship_type NOT IN ('subagent', 'fork')",
 		"deleted_at IS NULL",
 	}
-	var args []any
+	if !f.IncludeChildren {
+		basePreds = append(basePreds,
+			"relationship_type NOT IN ('subagent', 'fork')")
+	}
+
+	// Filter predicates narrow results based on user criteria.
+	// When IncludeChildren is true these only apply to root
+	// sessions; children are included via a subquery on their
+	// parent instead.
+	var filterPreds []string
+	var filterArgs []any
 
 	if f.Project != "" {
-		preds = append(preds, "project = ?")
-		args = append(args, f.Project)
+		filterPreds = append(filterPreds, "project = ?")
+		filterArgs = append(filterArgs, f.Project)
 	}
 	if f.ExcludeProject != "" {
-		preds = append(preds, "project != ?")
-		args = append(args, f.ExcludeProject)
+		filterPreds = append(filterPreds, "project != ?")
+		filterArgs = append(filterArgs, f.ExcludeProject)
 	}
 	if f.Machine != "" {
-		preds = append(preds, "machine = ?")
-		args = append(args, f.Machine)
+		filterPreds = append(filterPreds, "machine = ?")
+		filterArgs = append(filterArgs, f.Machine)
 	}
 	if f.Agent != "" {
 		agents := strings.Split(f.Agent, ",")
 		if len(agents) == 1 {
-			preds = append(preds, "agent = ?")
-			args = append(args, agents[0])
+			filterPreds = append(filterPreds, "agent = ?")
+			filterArgs = append(filterArgs, agents[0])
 		} else {
 			placeholders := make(
 				[]string, len(agents),
 			)
 			for i, a := range agents {
 				placeholders[i] = "?"
-				args = append(args, a)
+				filterArgs = append(filterArgs, a)
 			}
-			preds = append(preds,
+			filterPreds = append(filterPreds,
 				"agent IN ("+
 					strings.Join(placeholders, ",")+
-					")",
-			)
+					")")
 		}
 	}
 	if f.Date != "" {
-		preds = append(preds,
+		filterPreds = append(filterPreds,
 			"date(COALESCE(NULLIF(started_at, ''), created_at)) = ?")
-		args = append(args, f.Date)
+		filterArgs = append(filterArgs, f.Date)
 	}
 	if f.DateFrom != "" {
-		preds = append(preds,
+		filterPreds = append(filterPreds,
 			"date(COALESCE(NULLIF(started_at, ''), created_at)) >= ?")
-		args = append(args, f.DateFrom)
+		filterArgs = append(filterArgs, f.DateFrom)
 	}
 	if f.DateTo != "" {
-		preds = append(preds,
+		filterPreds = append(filterPreds,
 			"date(COALESCE(NULLIF(started_at, ''), created_at)) <= ?")
-		args = append(args, f.DateTo)
+		filterArgs = append(filterArgs, f.DateTo)
 	}
 	if f.ActiveSince != "" {
-		preds = append(preds,
+		filterPreds = append(filterPreds,
 			"COALESCE(NULLIF(ended_at, ''), NULLIF(started_at, ''), created_at) >= ?")
-		args = append(args, f.ActiveSince)
+		filterArgs = append(filterArgs, f.ActiveSince)
 	}
 	if f.MinMessages > 0 {
-		preds = append(preds, "message_count >= ?")
-		args = append(args, f.MinMessages)
+		filterPreds = append(filterPreds, "message_count >= ?")
+		filterArgs = append(filterArgs, f.MinMessages)
 	}
 	if f.MaxMessages > 0 {
-		preds = append(preds, "message_count <= ?")
-		args = append(args, f.MaxMessages)
+		filterPreds = append(filterPreds, "message_count <= ?")
+		filterArgs = append(filterArgs, f.MaxMessages)
 	}
 	if f.MinUserMessages > 0 {
-		preds = append(preds, "user_message_count >= ?")
-		args = append(args, f.MinUserMessages)
-	}
-	if f.ExcludeOneShot {
-		preds = append(preds, "user_message_count > 1")
+		filterPreds = append(filterPreds, "user_message_count >= ?")
+		filterArgs = append(filterArgs, f.MinUserMessages)
 	}
 
-	return strings.Join(preds, " AND "), args
+	// ExcludeOneShot is handled separately from filterPreds
+	// when IncludeChildren is true. Children (subagents, forks)
+	// are almost always one-shot by nature and must not be
+	// excluded. The one-shot filter applies only to root
+	// sessions that match the filter directly.
+	oneShotPred := ""
+	if f.ExcludeOneShot {
+		if f.IncludeChildren {
+			oneShotPred = "user_message_count > 1"
+		} else {
+			filterPreds = append(filterPreds,
+				"user_message_count > 1")
+		}
+	}
+
+	// Simple case: no IncludeChildren or no user filters.
+	hasFilters := len(filterPreds) > 0 || oneShotPred != ""
+	if !f.IncludeChildren || !hasFilters {
+		allPreds := append(basePreds, filterPreds...)
+		return strings.Join(allPreds, " AND "), filterArgs
+	}
+
+	// IncludeChildren + filters: match the filter directly,
+	// or be a child of a session that matches the filter.
+	// This scopes children to their parent's filter match
+	// instead of including all children in the database.
+	baseWhere := strings.Join(basePreds, " AND ")
+
+	// Root match: must pass all filter predicates + one-shot.
+	rootMatchParts := append([]string{}, filterPreds...)
+	if oneShotPred != "" {
+		rootMatchParts = append(rootMatchParts, oneShotPred)
+	}
+	rootMatch := strings.Join(rootMatchParts, " AND ")
+
+	// Subquery for parent inclusion: same criteria as root
+	// match so only children of qualifying parents appear.
+	subqWhere := "message_count > 0 AND deleted_at IS NULL"
+	if rootMatch != "" {
+		subqWhere += " AND " + rootMatch
+	}
+
+	where := baseWhere + " AND (" + rootMatch +
+		" OR parent_session_id IN" +
+		" (SELECT id FROM sessions WHERE " + subqWhere + "))"
+
+	// Args appear twice: outer root match + subquery.
+	allArgs := make([]any, 0, len(filterArgs)*2)
+	allArgs = append(allArgs, filterArgs...)
+	allArgs = append(allArgs, filterArgs...)
+	return where, allArgs
 }
 
 // ListSessions returns a cursor-paginated list of sessions.

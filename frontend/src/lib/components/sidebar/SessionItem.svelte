@@ -10,6 +10,21 @@
     continuationCount?: number;
     groupSessionIds?: string[];
     hideAgent?: boolean;
+    hideProject?: boolean;
+    /** Render in compact mode (smaller, used for child sessions). */
+    compact?: boolean;
+    /** Whether this item's continuation chain is expanded. */
+    expanded?: boolean;
+    /** Callback to toggle continuation chain expand/collapse. */
+    onToggleExpand?: () => void;
+    /** Nesting depth: 0 = root, 1 = child, 2 = grandchild. */
+    depth?: number;
+    /** Whether this is the last sibling at its depth level. */
+    isLastChild?: boolean;
+    /** Whether the group contains subagent children. */
+    hasSubagents?: boolean;
+    /** Whether the group contains teammate children. */
+    hasTeammates?: boolean;
   }
 
   let {
@@ -17,15 +32,28 @@
     continuationCount = 1,
     groupSessionIds,
     hideAgent = false,
+    hideProject = false,
+    compact = false,
+    expanded = false,
+    onToggleExpand,
+    depth = 0,
+    isLastChild = false,
+    hasSubagents = false,
+    hasTeammates = false,
   }: Props = $props();
 
-  let isActive = $derived(
-    groupSessionIds
-      ? groupSessionIds.includes(
-          sessions.activeSessionId ?? "",
-        )
-      : sessions.activeSessionId === session.id,
-  );
+  let isActive = $derived.by(() => {
+    const aid = sessions.activeSessionId;
+    if (!aid) return false;
+    // Direct match (child rows, or root with no group).
+    if (aid === session.id) return true;
+    // Parent row: only highlight when the chain is collapsed
+    // (i.e. the child is not visible as its own row).
+    if (groupSessionIds && !expanded) {
+      return groupSessionIds.includes(aid);
+    }
+    return false;
+  });
 
   let recentlyActive = $derived(isRecentlyActive(session));
 
@@ -33,13 +61,38 @@
     getAgentColor(session.agent),
   );
 
-  let displayName = $derived(
-    session.display_name
-      ? truncate(session.display_name, 50)
-      : session.first_message
-        ? truncate(session.first_message, 50)
-        : truncate(session.project, 30),
+  /** Whether this session is a team member (received a <teammate-message>). */
+  let isTeamSession = $derived(
+    session.first_message?.includes("<teammate-message") ?? false,
   );
+
+  /**
+   * Clean display name: for teammate sessions, extract the unique task
+   * description (e.g. "Task #2: Align ROADMAP.md...") instead of the
+   * repetitive "You are a teammate on..." boilerplate.
+   */
+  let displayName = $derived.by(() => {
+    if (session.display_name) return truncate(session.display_name, 50);
+    let msg = session.first_message ?? "";
+    if (msg.includes("<teammate-message")) {
+      msg = msg
+        .replace(/<teammate-message[^>]*>/g, "")
+        .replace(/<\/teammate-message>/g, "")
+        .trim();
+      // Extract "Task #N: description" from the boilerplate.
+      const taskMatch = msg.match(/Task\s*#?\d+[:\s]+(.+?)(?:\s+\d+\.|$)/s);
+      if (taskMatch) {
+        return truncate(taskMatch[1]!.trim(), 50);
+      }
+      // Fallback: skip the "You are a teammate on ..." boilerplate.
+      const afterTeam = msg.match(/team[."]\s*[^.]*?[.]\s+(.+)/s)
+        ?? msg.match(/You are a teammate[^.]*\.\s+(.+)/s);
+      if (afterTeam) {
+        return truncate(afterTeam[1]!.trim(), 50);
+      }
+    }
+    return msg ? truncate(msg, 50) : truncate(session.project, 30);
+  });
 
   let timeStr = $derived(
     formatRelativeTime(session.ended_at ?? session.started_at),
@@ -47,9 +100,25 @@
 
   let isStarred = $derived(starred.isStarred(session.id));
 
+  let childCount = $derived(
+    continuationCount > 1 ? continuationCount - 1 : 0,
+  );
+
+  let hasChildren = $derived(childCount > 0 && !!onToggleExpand);
+
+  /** Whether this is an orphaned teammate showing at root level. */
+  let isOrphanedTeammate = $derived(
+    depth === 0 && isTeamSession,
+  );
+
   function handleStar(e: MouseEvent) {
     e.stopPropagation();
     starred.toggle(session.id);
+  }
+
+  function handleToggle(e: MouseEvent) {
+    e.stopPropagation();
+    onToggleExpand?.();
   }
 
   // Context menu state
@@ -60,10 +129,6 @@
   let renameValue = $state("");
   let renameInput: HTMLInputElement | undefined = $state(undefined);
 
-  /**
-   * Svelte action: portal — moves a DOM node to document.body,
-   * escaping overflow/transform stacking contexts.
-   */
   function portal(node: HTMLElement) {
     document.body.appendChild(node);
     return {
@@ -90,14 +155,13 @@
   }
 
   async function submitRename() {
-    // Guard against blur firing after Escape already cancelled.
     if (!renaming) return;
     renaming = false;
     const name = renameValue.trim() || null;
     try {
       await sessions.renameSession(session.id, name);
     } catch {
-      // silently fail — name reverts in UI
+      // silently fail
     }
   }
 
@@ -115,13 +179,11 @@
     startRename();
   }
 
-  // Close context menu on outside click
   $effect(() => {
     if (!contextMenu) return;
     function handler() {
       contextMenu = null;
     }
-    // Use setTimeout to avoid closing from the same right-click event.
     const id = setTimeout(() => {
       document.addEventListener("click", handler, { once: true });
       document.addEventListener("contextmenu", handler, {
@@ -135,7 +197,6 @@
     };
   });
 
-  // Close context menu on Escape
   $effect(() => {
     if (!contextMenu) return;
     function handler(e: KeyboardEvent) {
@@ -147,27 +208,56 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="session-item"
   class:active={isActive}
+  class:compact
+  class:depth-1={depth === 1}
+  class:depth-2={depth >= 2}
+  class:orphaned-teammate={isOrphanedTeammate}
   data-session-id={session.id}
   role="button"
   tabindex="0"
+  style:padding-left="{8 + depth * 16}px"
   onclick={() => sessions.selectSession(session.id)}
   onkeydown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sessions.selectSession(session.id); } }}
   oncontextmenu={handleContextMenu}
 >
-  {#if !hideAgent}
-    <div class="agent-indicator" style:--agent-c={agentColor}>
-      <span
-        class="agent-dot"
-        class:recently-active={recentlyActive}
-      ></span>
-      <span class="agent-label">{session.agent}</span>
-    </div>
-  {:else if recentlyActive}
-    <span class="agent-dot recently-active" style:background={agentColor}></span>
+  <!-- Tree expand/collapse or connector -->
+  {#if hasChildren}
+    <button
+      type="button"
+      class="tree-toggle"
+      onclick={handleToggle}
+      tabindex="-1"
+      aria-label={expanded ? "Collapse" : "Expand"}
+    >
+      <svg
+        class="tree-arrow"
+        class:expanded
+        width="10"
+        height="10"
+        viewBox="0 0 16 16"
+        fill="currentColor"
+      >
+        <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/>
+      </svg>
+    </button>
+  {:else if depth > 0}
+    <span class="tree-dash"></span>
+  {:else}
+    <span class="tree-spacer"></span>
   {/if}
+
+  {#if !hideAgent || recentlyActive}
+    <span
+      class="agent-dot"
+      class:recently-active={recentlyActive}
+      style:background={agentColor}
+    ></span>
+  {/if}
+
   <div class="session-info">
     {#if renaming}
       <!-- svelte-ignore a11y_autofocus -->
@@ -194,31 +284,50 @@
       <div class="session-name" ondblclick={handleDblClick}>{displayName}</div>
     {/if}
     <div class="session-meta">
-      <span class="session-project">{session.project}</span>
+      {#if !hideProject}
+        <span class="session-project">{session.project}</span>
+      {/if}
       <span class="session-time">{timeStr}</span>
       <span class="session-count">{session.user_message_count}</span>
-      {#if continuationCount > 1}
+      {#if hasSubagents}
+        <svg class="group-hint-icon" width="9" height="9" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" title="Has subagents">
+          <path d="M10.56 7.01A3.5 3.5 0 108 0a3.5 3.5 0 002.56 7.01zM8 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z"/>
+        </svg>
+      {/if}
+      {#if hasTeammates}
+        <svg class="group-hint-icon" width="11" height="9" viewBox="0 0 20 16" fill="currentColor" aria-hidden="true" title="Has team">
+          <path d="M7.56 7.01A3.5 3.5 0 105 0a3.5 3.5 0 002.56 7.01zM5 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z"/>
+          <path d="M17.56 7.01A3.5 3.5 0 1015 0a3.5 3.5 0 002.56 7.01zM15 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z" opacity="0.6"/>
+        </svg>
+      {/if}
+      {#if childCount > 0 && !onToggleExpand}
         <span class="continuation-badge">x{continuationCount}</span>
       {/if}
     </div>
   </div>
-  <button
-    class="star-btn"
-    class:starred={isStarred}
-    onclick={handleStar}
-    title={isStarred ? "Unstar session" : "Star session"}
-    aria-label={isStarred ? "Unstar session" : "Star session"}
-  >
-    {#if isStarred}
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-        <path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/>
-      </svg>
-    {:else}
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
-        <path d="M8 1.5l1.88 3.81 4.21.61-3.05 2.97.72 4.19L8 11.1l-3.77 1.98.72-4.19L1.9 5.92l4.21-.61L8 1.5z"/>
-      </svg>
-    {/if}
-  </button>
+
+  {#if !compact}
+    <button
+      class="star-btn"
+      class:starred={isStarred}
+      onclick={handleStar}
+      title={isStarred ? "Unstar session" : "Star session"}
+      aria-label={isStarred ? "Unstar session" : "Star session"}
+    >
+      {#if isStarred}
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/>
+        </svg>
+      {:else}
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+          <path d="M8 1.5l1.88 3.81 4.21.61-3.05 2.97.72 4.19L8 11.1l-3.77 1.98.72-4.19L1.9 5.92l4.21-.61L8 1.5z"/>
+        </svg>
+      {/if}
+    </button>
+  {/if}
+  {#if !hideAgent && !compact}
+    <span class="agent-tag" style:color={agentColor}>{session.agent}</span>
+  {/if}
 </div>
 
 {#if contextMenu}
@@ -240,16 +349,27 @@
   .session-item {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 5px;
     width: 100%;
     height: 42px;
-    padding: 0 14px;
+    padding: 0 10px;
+    padding-right: 10px;
     text-align: left;
-    border-left: 2px solid transparent;
     transition: background 0.1s;
     user-select: none;
     -webkit-user-select: none;
     cursor: pointer;
+    position: relative;
+  }
+
+  .session-item.compact {
+    height: 34px;
+    gap: 4px;
+  }
+
+  .session-item.depth-1,
+  .session-item.depth-2 {
+    background: transparent;
   }
 
   .session-item:hover {
@@ -258,22 +378,55 @@
 
   .session-item.active {
     background: var(--bg-surface-hover);
-    border-left-color: var(--accent-blue);
   }
 
-  .agent-indicator {
+  /* Orphaned teammate at root level — dim it slightly */
+  .session-item.orphaned-teammate {
+    opacity: 0.6;
+  }
+
+  /* Tree toggle (▶/▼) */
+  .tree-toggle {
+    all: unset;
     display: flex;
     align-items: center;
-    gap: 4px;
+    justify-content: center;
+    width: 16px;
+    height: 100%;
     flex-shrink: 0;
-    max-width: 72px;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: color 0.1s;
+  }
+
+  .tree-toggle:hover {
+    color: var(--text-primary);
+  }
+
+  .tree-arrow {
+    transition: transform 150ms ease;
+  }
+
+  .tree-arrow.expanded {
+    transform: rotate(90deg);
+  }
+
+  /* Spacer for leaf nodes — same width as toggle to align text */
+  .tree-dash {
+    width: 16px;
+    flex-shrink: 0;
+  }
+
+  /* Empty spacer for root items without children */
+  .tree-spacer {
+    width: 16px;
+    flex-shrink: 0;
   }
 
   .agent-dot {
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: var(--agent-c);
     flex-shrink: 0;
   }
 
@@ -296,16 +449,19 @@
     }
   }
 
-  .agent-label {
-    font-size: 9px;
-    font-weight: 550;
-    color: var(--agent-c);
-    text-transform: capitalize;
-    letter-spacing: 0.01em;
+  /* Agent tag on the right side */
+  .agent-tag {
+    flex-shrink: 0;
+    font-size: 8px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
     line-height: 1;
+    opacity: 0.7;
+    white-space: nowrap;
+    max-width: 52px;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .session-info {
@@ -322,6 +478,11 @@
     text-overflow: ellipsis;
     line-height: 1.3;
     letter-spacing: -0.005em;
+  }
+
+  .compact .session-name {
+    font-size: 11px;
+    color: var(--text-secondary);
   }
 
   .rename-input {
@@ -347,6 +508,10 @@
     letter-spacing: 0.01em;
   }
 
+  .compact .session-meta {
+    font-size: 9px;
+  }
+
   .session-project {
     white-space: nowrap;
     overflow: hidden;
@@ -357,6 +522,12 @@
   .session-time {
     white-space: nowrap;
     flex-shrink: 0;
+  }
+
+  .group-hint-icon {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    opacity: 0.5;
   }
 
   .session-count {
@@ -410,7 +581,6 @@
     background: var(--bg-surface-hover);
   }
 
-  /* Context menu uses :global since it's portaled to document.body */
   :global(.context-menu) {
     position: fixed;
     z-index: 9999;

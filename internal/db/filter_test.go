@@ -262,6 +262,262 @@ func TestListSessionsExcludesRelationshipTypes(t *testing.T) {
 	requireSessions(t, d, f, []string{"normal"})
 }
 
+func TestIncludeChildrenBypassesFilters(t *testing.T) {
+	d := testDB(t)
+
+	// Parent session: claude agent, dated 2024-06-01, 10 messages.
+	insertSession(t, d, "parent", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.StartedAt = Ptr("2024-06-01T10:00:00Z")
+		s.EndedAt = Ptr("2024-06-01T11:00:00Z")
+		s.MessageCount = 10
+		s.UserMessageCount = 5
+	})
+
+	// Subagent child: different agent, different date, 1 message.
+	insertSession(t, d, "child-sub", "proj", func(s *Session) {
+		s.Agent = "codex"
+		s.StartedAt = Ptr("2024-07-15T10:00:00Z")
+		s.EndedAt = Ptr("2024-07-15T11:00:00Z")
+		s.MessageCount = 1
+		s.UserMessageCount = 1
+		s.ParentSessionID = Ptr("parent")
+		s.RelationshipType = "subagent"
+	})
+
+	// Fork child: same agent but fewer messages than filter.
+	insertSession(t, d, "child-fork", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.StartedAt = Ptr("2024-06-02T10:00:00Z")
+		s.EndedAt = Ptr("2024-06-02T11:00:00Z")
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+		s.ParentSessionID = Ptr("parent")
+		s.RelationshipType = "fork"
+	})
+
+	tests := []struct {
+		name   string
+		filter SessionFilter
+		want   []string
+	}{
+		{
+			name: "AgentFilterBypassesChildren",
+			filter: SessionFilter{
+				IncludeChildren: true,
+				Agent:           "claude",
+			},
+			want: []string{"parent", "child-sub", "child-fork"},
+		},
+		{
+			name: "DateFilterBypassesChildren",
+			filter: SessionFilter{
+				IncludeChildren: true,
+				Date:            "2024-06-01",
+			},
+			want: []string{"parent", "child-sub", "child-fork"},
+		},
+		{
+			name: "MinMessagesFilterBypassesChildren",
+			filter: SessionFilter{
+				IncludeChildren: true,
+				MinMessages:     5,
+			},
+			want: []string{"parent", "child-sub", "child-fork"},
+		},
+		{
+			name: "WithoutIncludeChildrenFiltersNormally",
+			filter: SessionFilter{
+				Agent: "claude",
+			},
+			// children excluded by default (subagent/fork filtered)
+			want: []string{"parent"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requireSessions(t, d, tt.filter, tt.want)
+		})
+	}
+}
+
+func TestIncludeChildrenScopesToMatchingParent(t *testing.T) {
+	d := testDB(t)
+
+	// Parent A: claude agent — matches agent filter.
+	insertSession(t, d, "parentA", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.MessageCount = 5
+		s.UserMessageCount = 3
+	})
+	// Child of parent A — should be included (parent matches).
+	insertSession(t, d, "childA", "proj", func(s *Session) {
+		s.Agent = "codex"
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+		s.ParentSessionID = Ptr("parentA")
+		s.RelationshipType = "subagent"
+	})
+
+	// Parent B: codex agent — does NOT match agent filter.
+	insertSession(t, d, "parentB", "proj", func(s *Session) {
+		s.Agent = "codex"
+		s.MessageCount = 5
+		s.UserMessageCount = 3
+	})
+	// Child of parent B.
+	insertSession(t, d, "childB", "proj", func(s *Session) {
+		s.Agent = "gemini"
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+		s.ParentSessionID = Ptr("parentB")
+		s.RelationshipType = "subagent"
+	})
+
+	// Parent C: gemini agent.
+	insertSession(t, d, "parentC", "proj", func(s *Session) {
+		s.Agent = "gemini"
+		s.MessageCount = 5
+		s.UserMessageCount = 3
+	})
+	// Child of parent C — gemini child of gemini parent.
+	// When filtering agent=claude, neither parent nor child
+	// match, so both should be excluded.
+	insertSession(t, d, "childC", "proj", func(s *Session) {
+		s.Agent = "gemini"
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+		s.ParentSessionID = Ptr("parentC")
+		s.RelationshipType = "subagent"
+	})
+
+	tests := []struct {
+		name   string
+		filter SessionFilter
+		want   []string
+	}{
+		{
+			name: "ChildOfMatchingParentIncluded",
+			filter: SessionFilter{
+				IncludeChildren: true,
+				Agent:           "claude",
+			},
+			want: []string{"parentA", "childA"},
+		},
+		{
+			// childA (agent=codex) matches the filter directly
+			// even though its parent (parentA, agent=claude)
+			// does not. childB is included because its parent
+			// (parentB, agent=codex) matches.
+			name: "ChildMatchesDirectlyOrViaParent",
+			filter: SessionFilter{
+				IncludeChildren: true,
+				Agent:           "codex",
+			},
+			want: []string{"childA", "parentB", "childB"},
+		},
+		{
+			// Neither parentC (gemini) nor childC (gemini)
+			// match agent=claude, and neither parent matches
+			// either, so both are excluded.
+			name: "UnrelatedChildExcluded",
+			filter: SessionFilter{
+				IncludeChildren: true,
+				Agent:           "claude",
+			},
+			want: []string{"parentA", "childA"},
+		},
+		{
+			name: "NoFilterReturnsAll",
+			filter: SessionFilter{
+				IncludeChildren: true,
+			},
+			want: []string{
+				"parentA", "childA", "parentB", "childB",
+				"parentC", "childC",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requireSessions(t, d, tt.filter, tt.want)
+		})
+	}
+}
+
+func TestIncludeChildrenExcludeOneShotAgent(t *testing.T) {
+	d := testDB(t)
+
+	// Multi-message claude root.
+	insertSession(t, d, "root", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.MessageCount = 10
+		s.UserMessageCount = 5
+	})
+	// One-shot subagent (codex) — should be included via parent
+	// despite ExcludeOneShot and different agent.
+	insertSession(t, d, "sub-codex", "proj", func(s *Session) {
+		s.Agent = "codex"
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+		s.ParentSessionID = Ptr("root")
+		s.RelationshipType = "subagent"
+	})
+	// One-shot fork (claude) — should be included via parent.
+	insertSession(t, d, "fork-1msg", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+		s.ParentSessionID = Ptr("root")
+		s.RelationshipType = "fork"
+	})
+	// One-shot standalone (not a child) — should be excluded.
+	insertSession(t, d, "standalone", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+	})
+
+	tests := []struct {
+		name   string
+		filter SessionFilter
+		want   []string
+	}{
+		{
+			name: "DefaultSidebar_OneShotChildrenKept",
+			filter: SessionFilter{
+				IncludeChildren: true,
+				ExcludeOneShot:  true,
+			},
+			want: []string{"root", "sub-codex", "fork-1msg"},
+		},
+		{
+			name: "AgentFilter_OneShotChildrenKept",
+			filter: SessionFilter{
+				IncludeChildren: true,
+				ExcludeOneShot:  true,
+				Agent:           "claude",
+			},
+			want: []string{
+				"root", "sub-codex", "fork-1msg",
+			},
+		},
+		{
+			name: "WithoutIncludeChildren_OneShotExcluded",
+			filter: SessionFilter{
+				ExcludeOneShot: true,
+			},
+			want: []string{"root"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requireSessions(t, d, tt.filter, tt.want)
+		})
+	}
+}
+
 func TestActiveSinceUsesEndedAtOverStartedAt(t *testing.T) {
 	d := testDB(t)
 

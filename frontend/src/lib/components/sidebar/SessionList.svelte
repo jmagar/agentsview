@@ -9,13 +9,17 @@
     agentLabel,
   } from "../../utils/agents.js";
   import {
+    type GroupMode,
     ITEM_HEIGHT,
     OVERSCAN,
-    STORAGE_KEY,
-    buildAgentSections,
+    STORAGE_KEY_GROUP,
+    getInitialGroupMode,
+    buildGroupSections,
     buildDisplayItems,
     computeTotalSize,
     findStart,
+    isSubagentDescendant,
+    selectPrimaryId,
   } from "./session-list-utils.js";
 
   let containerRef: HTMLDivElement | undefined = $state(undefined);
@@ -49,17 +53,16 @@
     }
   });
 
-  let groupByAgent = $state(
-    typeof localStorage !== "undefined" &&
-      localStorage.getItem(STORAGE_KEY) === "true",
-  );
+  let groupMode: GroupMode = $state(getInitialGroupMode());
   let manualExpanded: Set<string> = $state(new Set());
   // Start all collapsed when grouping is first enabled.
-  let collapseAll = $state(true);
+  let collapseAll = $state(getInitialGroupMode() !== "none");
+  // Track which continuation chains are expanded.
+  let expandedGroups: Set<string> = $state(new Set());
 
   $effect(() => {
     if (typeof localStorage !== "undefined") {
-      localStorage.setItem(STORAGE_KEY, String(groupByAgent));
+      localStorage.setItem(STORAGE_KEY_GROUP, groupMode);
     }
   });
 
@@ -80,42 +83,60 @@
     const all = sessions.groupedSessions;
     if (!starred.filterOnly) return all;
     return all
-      .map((g) => ({
-        ...g,
-        sessions: g.sessions.filter((s) =>
+      .map((g) => {
+        const filtered = g.sessions.filter((s) =>
           starred.isStarred(s.id),
-        ),
-      }))
+        );
+        // Recompute primarySessionId so it points to a
+        // session that survived the filter, using the same
+        // recency rule as buildSessionGroups.
+        const primaryStillPresent = filtered.some(
+          (s) => s.id === g.primarySessionId,
+        );
+        return {
+          ...g,
+          sessions: filtered,
+          // Preserve full session list so ancestry helpers
+          // can still walk the parent chain correctly.
+          allSessions: g.sessions,
+          primarySessionId: primaryStillPresent
+            ? g.primarySessionId
+            : selectPrimaryId(filtered, g.key),
+        };
+      })
       .filter((g) => g.sessions.length > 0);
   });
 
-  // Build agent-grouped structure when groupByAgent is on.
-  let agentSections = $derived.by(() =>
-    buildAgentSections(groups, groupByAgent),
+  // Build grouped structure when groupMode is not "none".
+  let groupSections = $derived.by(() =>
+    buildGroupSections(groups, groupMode),
   );
 
   // Derive effective collapsed set synchronously so the first
   // render is already collapsed (no flicker).
-  let collapsedAgents = $derived.by(() => {
-    if (!groupByAgent) return new Set<string>();
+  let collapsed = $derived.by(() => {
+    if (groupMode === "none") return new Set<string>();
     if (collapseAll) {
-      return new Set(agentSections.map((s) => s.agent));
+      return new Set(groupSections.map((s) => s.label));
     }
-    // Invert: all agents minus the manually expanded ones.
-    const all = new Set(agentSections.map((s) => s.agent));
+    // Invert: all labels minus the manually expanded ones.
+    const all = new Set(groupSections.map((s) => s.label));
     for (const a of manualExpanded) all.delete(a);
     return all;
   });
 
   // Build flat display items for virtual scrolling.
   let displayItems = $derived.by(() =>
-    buildDisplayItems(groups, agentSections, groupByAgent, collapsedAgents),
+    buildDisplayItems(groups, groupSections, groupMode, collapsed, expandedGroups),
   );
 
+  // When include_children is enabled the API total includes
+  // child/subagent sessions.  The header should show the count of
+  // root-level groups the user actually sees in the sidebar.
   let totalCount = $derived(
     starred.filterOnly
       ? groups.reduce((n, g) => n + g.sessions.length, 0)
-      : sessions.total,
+      : groups.length,
   );
   let totalSize = $derived(computeTotalSize(displayItems));
 
@@ -132,29 +153,53 @@
     return result;
   });
 
-  function toggleGroupByAgent() {
-    groupByAgent = !groupByAgent;
-    if (groupByAgent) {
-      collapseAll = true;
-      manualExpanded = new Set();
-    }
+  function setGroupMode(mode: GroupMode) {
+    groupMode = mode;
+    collapseAll = mode !== "none";
+    manualExpanded = new Set();
   }
 
-  function toggleAgent(agent: string) {
+  function toggleGroupByAgent() {
+    setGroupMode(groupMode === "agent" ? "none" : "agent");
+  }
+
+  function toggleGroupByProject() {
+    setGroupMode(groupMode === "project" ? "none" : "project");
+  }
+
+  function toggleGroup(label: string) {
     if (collapseAll) {
-      // First toggle after fresh group-enable: switch to
-      // manual mode, expanding only the clicked agent.
       collapseAll = false;
-      manualExpanded = new Set([agent]);
+      manualExpanded = new Set([label]);
     } else {
       const next = new Set(manualExpanded);
-      if (next.has(agent)) {
-        next.delete(agent);
+      if (next.has(label)) {
+        next.delete(label);
       } else {
-        next.add(agent);
+        next.add(label);
       }
       manualExpanded = next;
     }
+  }
+
+  function toggleChainExpand(groupKey: string) {
+    const next = new Set(expandedGroups);
+    if (next.has(groupKey)) {
+      next.delete(groupKey);
+      // When collapsing a parent, also remove sub-group keys.
+      if (!groupKey.includes(":")) {
+        next.delete(`subagent:${groupKey}`);
+        next.delete(`team:${groupKey}`);
+      }
+    } else {
+      next.add(groupKey);
+      // When expanding a parent, auto-expand sub-groups.
+      if (!groupKey.includes(":")) {
+        next.add(`subagent:${groupKey}`);
+        next.add(`team:${groupKey}`);
+      }
+    }
+    expandedGroups = next;
   }
 
   $effect(() => {
@@ -229,25 +274,54 @@
     // Read displayItems inside the effect so Svelte tracks
     // it — needed to re-run after a group expansion.
     const items = displayItems;
-    const item = items.find(
+    // Try to find the exact child row first (when expanded).
+    let item = items.find(
       (it) =>
         it.type === "session" &&
-        it.group?.sessions.some((s) => s.id === activeId),
+        it.isChild &&
+        it.session?.id === activeId,
     );
+    // Fall back to the parent row only if the active session
+    // IS the primary (visible as the root row). If it's a
+    // child hidden in a collapsed subgroup, fall through to
+    // the auto-expand path below instead.
     if (!item) {
-      // Session may be hidden in a collapsed agent group.
+      item = items.find(
+        (it) =>
+          it.type === "session" &&
+          !it.isChild &&
+          it.group?.primarySessionId === activeId,
+      );
+    }
+    if (!item) {
+      // Session may be hidden in a collapsed group section.
       // Expand it — the effect will re-run when displayItems
       // updates, and prevRevealedId is still unset so the
       // second pass will proceed to scroll.
-      if (!groupByAgent) return;
-      for (const section of agentSections) {
-        const owns = section.groups.some((g) =>
-          g.sessions.some((s) => s.id === activeId),
-        );
-        if (owns && collapsedAgents.has(section.agent)) {
-          toggleAgent(section.agent);
-          return;
+      if (groupMode !== "none") {
+        for (const section of groupSections) {
+          const owns = section.groups.some((g) =>
+            g.sessions.some((s) => s.id === activeId),
+          );
+          if (owns && collapsed.has(section.label)) {
+            toggleGroup(section.label);
+            return;
+          }
         }
+      }
+      // Session may be inside a collapsed continuation chain.
+      // Auto-expand the parent group and relevant sub-groups.
+      for (const g of groups) {
+        const match = g.sessions.find((s) => s.id === activeId);
+        if (!match) continue;
+        if (match.id === g.primarySessionId) break; // already primary
+        const next = new Set(expandedGroups);
+        if (!next.has(g.key)) next.add(g.key);
+        // Auto-expand the correct sub-group.
+        next.add(`subagent:${g.key}`);
+        next.add(`team:${g.key}`);
+        expandedGroups = next;
+        return;
       }
       return;
     }
@@ -300,7 +374,7 @@
           points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
         />
       </svg>
-      {#if hasFilters || groupByAgent}
+      {#if hasFilters || groupMode !== "none"}
         <span class="filter-indicator"></span>
       {/if}
     </button>
@@ -310,14 +384,25 @@
           <div class="filter-section-label">Display</div>
           <button
             class="filter-toggle"
-            class:active={groupByAgent}
+            class:active={groupMode === "agent"}
             onclick={toggleGroupByAgent}
           >
             <span
               class="toggle-check"
-              class:on={groupByAgent}
+              class:on={groupMode === "agent"}
             ></span>
             Group by agent
+          </button>
+          <button
+            class="filter-toggle"
+            class:active={groupMode === "project"}
+            onclick={toggleGroupByProject}
+          >
+            <span
+              class="toggle-check"
+              class:on={groupMode === "project"}
+            ></span>
+            Group by project
           </button>
         </div>
         <div class="filter-section">
@@ -448,16 +533,17 @@
             {/each}
           </div>
         </div>
-        {#if hasFilters}
+        {#if hasFilters || groupMode !== "none"}
           <button
             class="clear-filters-btn"
             onclick={() => {
+              if (groupMode !== "none") setGroupMode("none");
               if (sessions.hasActiveFilters && starred.filterOnly) {
                 starred.filterOnly = false;
                 sessions.clearSessionFilters();
               } else if (sessions.hasActiveFilters) {
                 sessions.clearSessionFilters();
-              } else {
+              } else if (starred.filterOnly) {
                 starred.filterOnly = false;
               }
             }}
@@ -484,12 +570,12 @@
       >
         {#if item.type === "header"}
           <button
-            class="agent-group-header"
-            onclick={() => toggleAgent(item.agent)}
+            class="group-header"
+            onclick={() => toggleGroup(item.label)}
           >
             <svg
               class="chevron"
-              class:expanded={!collapsedAgents.has(item.agent)}
+              class:expanded={!collapsed.has(item.label)}
               width="10"
               height="10"
               viewBox="0 0 16 16"
@@ -497,17 +583,73 @@
             >
               <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/>
             </svg>
-            <span
-              class="agent-group-dot"
-              style:background={agentColor(item.agent)}
-            ></span>
-            <span class="agent-group-name">{item.agent}</span>
-            <span class="agent-group-count">{item.count}</span>
+            {#if groupMode === "agent"}
+              <span
+                class="group-dot"
+                style:background={agentColor(item.label)}
+              ></span>
+            {:else}
+              <svg
+                class="project-icon"
+                width="11"
+                height="11"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+              >
+                <path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2c-.33-.44-.85-.7-1.4-.7z"/>
+              </svg>
+            {/if}
+            <span class="group-name">{item.label}</span>
+            <span class="group-count">{item.count}</span>
           </button>
+        {:else if item.type === "subagent-group" && item.group}
+          {@const subKey = `subagent:${item.group.key}`}
+          {@const subExpanded = expandedGroups.has(subKey)}
+          <button
+            class="sub-group-header"
+            style:padding-left="{8 + (item.depth ?? 1) * 16}px"
+            onclick={() => toggleChainExpand(subKey)}
+          >
+            <svg class="sub-group-arrow" class:expanded={subExpanded} width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/></svg>
+            <svg class="sub-group-icon" width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path d="M10.56 7.01A3.5 3.5 0 108 0a3.5 3.5 0 002.56 7.01zM8 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z"/>
+            </svg>
+            <span class="sub-group-label">Subagents</span>
+            <span class="sub-group-count">({item.count})</span>
+          </button>
+        {:else if item.type === "team-group" && item.group}
+          {@const teamKey = `team:${item.group.key}`}
+          {@const teamExpanded = expandedGroups.has(teamKey)}
+          <button
+            class="sub-group-header"
+            style:padding-left="{8 + (item.depth ?? 1) * 16}px"
+            onclick={() => toggleChainExpand(teamKey)}
+          >
+            <svg class="sub-group-arrow" class:expanded={teamExpanded} width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/></svg>
+            <svg class="sub-group-icon" width="12" height="10" viewBox="0 0 20 16" fill="currentColor" aria-hidden="true">
+              <path d="M7.56 7.01A3.5 3.5 0 105 0a3.5 3.5 0 002.56 7.01zM5 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z"/>
+              <path d="M17.56 7.01A3.5 3.5 0 1015 0a3.5 3.5 0 002.56 7.01zM15 8.5c-2.7 0-5 1.7-5 4v.75c0 .41.34.75.75.75h8.5c.41 0 .75-.34.75-.75v-.75c0-2.3-2.3-4-5-4z" opacity="0.6"/>
+            </svg>
+            <span class="sub-group-label">Team</span>
+            <span class="sub-group-count">({item.count})</span>
+          </button>
+        {:else if item.isChild && item.session}
+          <SessionItem
+            session={item.session}
+            continuationCount={1}
+            hideAgent={groupMode === "agent"}
+            hideProject={groupMode === "project"}
+            compact
+            depth={item.depth ?? 1}
+            isLastChild={item.isLastChild ?? false}
+          />
         {:else if item.group}
           {@const primary = item.group.sessions.find(
             (s) => s.id === item.group!.primarySessionId,
           ) ?? item.group.sessions[0]}
+          {@const children = item.group.sessions.filter((s) => s.id !== item.group!.primarySessionId)}
+          {@const groupHasSubagents = children.some((s) => isSubagentDescendant(s, item.group!.sessions))}
+          {@const groupHasTeammates = children.some((s) => s.first_message?.includes("<teammate-message") ?? false)}
           {#if primary}
             <SessionItem
               session={primary}
@@ -515,7 +657,15 @@
               groupSessionIds={item.group.sessions.length > 1
                 ? item.group.sessions.map((s) => s.id)
                 : undefined}
-              hideAgent={groupByAgent}
+              hideAgent={groupMode === "agent"}
+              hideProject={groupMode === "project"}
+              expanded={expandedGroups.has(item.group.key)}
+              onToggleExpand={item.group.sessions.length > 1
+                ? () => toggleChainExpand(item.group!.key)
+                : undefined}
+              depth={0}
+              hasSubagents={groupHasSubagents}
+              hasTeammates={groupHasTeammates}
             />
           {/if}
         {/if}
@@ -831,8 +981,8 @@
     overflow-x: hidden;
   }
 
-  /* Agent group headers */
-  .agent-group-header {
+  /* Group headers (agent and project) */
+  .group-header {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -851,7 +1001,7 @@
     user-select: none;
   }
 
-  .agent-group-header:hover {
+  .group-header:hover {
     color: var(--text-secondary);
     background: var(--bg-surface-hover);
   }
@@ -865,14 +1015,19 @@
     transform: rotate(90deg);
   }
 
-  .agent-group-dot {
+  .group-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
     flex-shrink: 0;
   }
 
-  .agent-group-name {
+  .project-icon {
+    flex-shrink: 0;
+    color: var(--text-muted);
+  }
+
+  .group-name {
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -880,7 +1035,7 @@
     white-space: nowrap;
   }
 
-  .agent-group-count {
+  .group-count {
     flex-shrink: 0;
     font-size: 9px;
     font-weight: 500;
@@ -890,4 +1045,55 @@
     border-radius: 8px;
     line-height: 16px;
   }
+
+  /* Sub-group headers (Subagents, Team) at depth 1 */
+  .sub-group-header {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    height: 28px;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    background: transparent;
+    border: none;
+    transition: background 0.1s;
+  }
+
+  .sub-group-header:hover {
+    background: var(--bg-surface-hover);
+  }
+
+  .sub-group-arrow {
+    flex-shrink: 0;
+    transition: transform 150ms ease;
+    color: var(--text-muted);
+    opacity: 0.5;
+  }
+
+  .sub-group-arrow.expanded {
+    transform: rotate(90deg);
+  }
+
+  .sub-group-icon {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    opacity: 0.6;
+  }
+
+  .sub-group-label {
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .sub-group-count {
+    font-size: 9px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
 </style>
