@@ -147,7 +147,12 @@ fn init_navigation_guard_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlug
 }
 
 fn is_allowed_navigation_url(url: &Url, backend_port: Option<u16>) -> bool {
+    // macOS/Linux: tauri://localhost
     if url.scheme() == "tauri" && url.host_str() == Some("localhost") {
+        return true;
+    }
+    // Windows (WebView2): http://tauri.localhost or https://tauri.localhost
+    if matches!(url.scheme(), "http" | "https") && url.host_str() == Some("tauri.localhost") {
         return true;
     }
     // Only allow navigation to the known sidecar port on
@@ -606,7 +611,7 @@ fn setup_menu(app: &mut App) -> Result<(), DynError> {
     let check_updates = MenuItemBuilder::with_id("check_updates", "Check for Updates...")
         .build(app)?;
 
-    let app_submenu = SubmenuBuilder::new(app, "AgentsView")
+    let app_submenu = SubmenuBuilder::new(app, "File")
         .item(&about)
         .separator()
         .item(&check_updates)
@@ -911,9 +916,21 @@ mod tests {
 
     #[test]
     fn is_allowed_navigation_url_allows_local_only() {
+        // macOS/Linux: tauri://localhost
         let tauri_url = Url::parse("tauri://localhost/index.html").expect("valid tauri url");
         assert!(is_allowed_navigation_url(&tauri_url, None));
         assert!(is_allowed_navigation_url(&tauri_url, Some(18080)));
+
+        // Windows (WebView2): http://tauri.localhost
+        let win_url =
+            Url::parse("http://tauri.localhost/index.html").expect("valid windows tauri url");
+        assert!(is_allowed_navigation_url(&win_url, None));
+        assert!(is_allowed_navigation_url(&win_url, Some(18080)));
+
+        // Windows with https
+        let win_https =
+            Url::parse("https://tauri.localhost/index.html").expect("valid windows https url");
+        assert!(is_allowed_navigation_url(&win_https, None));
 
         let local_backend = Url::parse("http://127.0.0.1:18080/").expect("valid localhost url");
         assert!(is_allowed_navigation_url(&local_backend, Some(18080)));
