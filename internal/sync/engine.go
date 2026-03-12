@@ -1049,6 +1049,8 @@ func (e *Engine) collectAndBatch(
 		if r.incremental != nil {
 			if err := e.writeIncremental(r.incremental); err != nil {
 				log.Printf("%v", err)
+				stats.RecordFailed()
+				continue
 			}
 			stats.RecordSynced(1)
 			progress.MessagesIndexed += len(
