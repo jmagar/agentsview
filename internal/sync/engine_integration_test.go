@@ -3040,3 +3040,88 @@ func TestResyncAllCancelledPreservesOriginalDB(t *testing.T) {
 		)
 	}
 }
+
+func TestSyncAllCancelledDoesNotUpdateLastSync(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// Seed the DB with a session.
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "hello").
+		String()
+	env.writeClaudeSession(
+		t, "ls-project", "ls-sess.jsonl", content,
+	)
+
+	// Run a successful sync to set lastSync.
+	env.engine.SyncAll(context.Background(), nil)
+	lastSync := env.engine.LastSync()
+	if lastSync.IsZero() {
+		t.Fatal("expected lastSync to be set")
+	}
+	lastStats := env.engine.LastSyncStats()
+	if lastStats.Synced == 0 {
+		t.Fatal("expected synced > 0")
+	}
+
+	// Run a cancelled sync.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stats := env.engine.SyncAll(ctx, nil)
+	if !stats.Aborted {
+		t.Fatal("expected SyncAll to report Aborted")
+	}
+
+	// lastSync and lastSyncStats should be unchanged.
+	if env.engine.LastSync() != lastSync {
+		t.Error("lastSync was updated by cancelled sync")
+	}
+	if env.engine.LastSyncStats().Synced != lastStats.Synced {
+		t.Error("lastSyncStats was updated by cancelled sync")
+	}
+}
+
+func TestSyncAllOpenCodeExcludedNotCountedAsFailed(
+	t *testing.T,
+) {
+	env := setupTestEnv(t)
+
+	// Create an OpenCode DB with a session.
+	oc := createOpenCodeDB(t, env.opencodeDir)
+	oc.addProject(t, "proj1", "/tmp/proj1")
+	oc.addSession(t, "oc-excl-1", "proj1", 1000, 1000)
+	oc.addMessage(t, "msg1", "oc-excl-1", "user", 1000)
+	oc.addTextPart(
+		t, "part1", "oc-excl-1", "msg1", "hi", 1000,
+	)
+
+	// Initial sync to get the session into the DB.
+	env.engine.SyncAll(context.Background(), nil)
+
+	sess, err := env.db.GetSession(
+		context.Background(), "opencode:oc-excl-1",
+	)
+	if err != nil || sess == nil {
+		t.Fatal("opencode session not found after sync")
+	}
+
+	// Permanently delete the session (marks it excluded).
+	if err := env.db.DeleteSession(
+		"opencode:oc-excl-1",
+	); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+
+	// Bump the time_updated so the next sync picks it up.
+	oc.updateSessionTime(t, "oc-excl-1", 2000)
+
+	// Sync again — the excluded session should not be
+	// counted as a failure.
+	stats := env.engine.SyncAll(context.Background(), nil)
+	if stats.Failed > 0 {
+		t.Errorf(
+			"Failed = %d, want 0 (excluded session "+
+				"should not count as failure)",
+			stats.Failed,
+		)
+	}
+}

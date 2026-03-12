@@ -897,9 +897,12 @@ func (e *Engine) syncAllLocked(
 			if ctx.Err() != nil {
 				break
 			}
-			if e.writeSessionFull(pw) {
+			switch err := e.writeSessionFull(pw); {
+			case err == nil:
 				ocWritten++
-			} else {
+			case errors.Is(err, db.ErrSessionExcluded):
+				// Intentional skip, not a failure.
+			default:
 				stats.RecordFailed()
 			}
 		}
@@ -1949,7 +1952,10 @@ func (e *Engine) writeMessages(
 // delete+reinsert of its messages. Used by explicit
 // single-session re-syncs where existing content may have
 // changed (not just appended).
-func (e *Engine) writeSessionFull(pw pendingWrite) bool {
+// writeSessionFull returns nil on success,
+// db.ErrSessionExcluded for intentional skips, or
+// another error for real failures.
+func (e *Engine) writeSessionFull(pw pendingWrite) error {
 	msgs := toDBMessages(pw, e.blockedResultCategories)
 	s := toDBSession(pw)
 	s.MessageCount, s.UserMessageCount =
@@ -1959,10 +1965,10 @@ func (e *Engine) writeSessionFull(pw pendingWrite) bool {
 			if pw.sess.File.Path != "" {
 				e.cacheSkip(pw.sess.File.Path, pw.sess.File.Mtime)
 			}
-		} else {
-			log.Printf("upsert session %s: %v", s.ID, err)
+			return db.ErrSessionExcluded
 		}
-		return false
+		log.Printf("upsert session %s: %v", s.ID, err)
+		return err
 	}
 	if err := e.db.ReplaceSessionMessages(
 		pw.sess.ID, msgs,
@@ -1971,9 +1977,9 @@ func (e *Engine) writeSessionFull(pw pendingWrite) bool {
 			"replace messages for %s: %v",
 			pw.sess.ID, err,
 		)
-		return false
+		return err
 	}
-	return true
+	return nil
 }
 
 // toDBSession converts a pendingWrite to a db.Session.
@@ -2177,9 +2183,12 @@ func (e *Engine) SyncSingleSession(sessionID string) error {
 	}
 
 	for _, pr := range res.results {
-		e.writeSessionFull(
+		if err := e.writeSessionFull(
 			pendingWrite{sess: pr.Session, msgs: pr.Messages},
-		)
+		); err != nil {
+			return fmt.Errorf("write session %s: %w",
+				pr.Session.ID, err)
+		}
 	}
 	return nil
 }
@@ -2230,9 +2239,12 @@ func (e *Engine) syncSingleOpenCode(
 		if sess == nil {
 			continue
 		}
-		e.writeSessionFull(
+		if err := e.writeSessionFull(
 			pendingWrite{sess: *sess, msgs: msgs},
-		)
+		); err != nil {
+			return fmt.Errorf("write session %s: %w",
+				sess.ID, err)
+		}
 		return nil
 	}
 
