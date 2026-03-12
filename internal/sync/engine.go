@@ -815,6 +815,10 @@ func (e *Engine) SyncAll(
 func (e *Engine) syncAllLocked(
 	ctx context.Context, onProgress ProgressFunc,
 ) SyncStats {
+	if ctx.Err() != nil {
+		return SyncStats{Aborted: true}
+	}
+
 	t0 := time.Now()
 
 	var all []parser.DiscoveredFile
@@ -872,13 +876,11 @@ func (e *Engine) syncAllLocked(
 	// If cancelled (either collectAndBatch set Aborted, or
 	// context was cancelled after the loop with no file-backed
 	// sessions), return partial stats without running further
-	// phases or mutating state. Don't update lastSync so the
-	// UI/sync-status still reflects the last completed sync.
+	// phases or mutating state. Don't update lastSync or
+	// lastSyncStats so the UI still reflects the last
+	// completed sync.
 	if stats.Aborted || ctx.Err() != nil {
 		stats.Aborted = true
-		e.mu.Lock()
-		e.lastSyncStats = stats
-		e.mu.Unlock()
 		return stats
 	}
 
@@ -897,6 +899,8 @@ func (e *Engine) syncAllLocked(
 			}
 			if e.writeSessionFull(pw) {
 				ocWritten++
+			} else {
+				stats.RecordFailed()
 			}
 		}
 		stats.RecordSynced(ocWritten)
@@ -917,9 +921,6 @@ func (e *Engine) syncAllLocked(
 
 	if ctx.Err() != nil {
 		stats.Aborted = true
-		e.mu.Lock()
-		e.lastSyncStats = stats
-		e.mu.Unlock()
 		return stats
 	}
 
