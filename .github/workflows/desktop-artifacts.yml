@@ -71,12 +71,11 @@ jobs:
         run: npm ci
         working-directory: desktop
 
-      - name: Desktop smoke tests
+      - name: Desktop smoke tests (shell scripts)
         shell: bash
         run: |
           bash desktop/scripts/test-prepare-sidecar.sh
           bash desktop/scripts/test-startup-ui.sh
-          cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib
 
       - name: Build desktop bundle
         shell: bash
@@ -84,6 +83,10 @@ jobs:
           cd desktop
           npm run prepare-sidecar
           npx tauri build --bundles "${{ matrix.bundle }}"
+
+      - name: Desktop smoke tests (Rust unit tests)
+        shell: bash
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib
 
       - name: Smoke check sidecar metadata
         shell: bash
