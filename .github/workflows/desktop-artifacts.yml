@@ -5,8 +5,12 @@ on:
   pull_request:
     paths:
       - 'desktop/**'
-      - '.github/workflows/desktop-artifacts.yml'
-      - '.github/workflows/desktop-release.yml'
+      - 'frontend/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/desktop-*.yml'
 
 permissions:
   contents: read
@@ -82,7 +86,8 @@ jobs:
         run: |
           cd desktop
           npm run prepare-sidecar
-          npx tauri build --bundles "${{ matrix.bundle }}"
+          npx tauri build --bundles "${{ matrix.bundle }}" \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Desktop smoke tests (Rust unit tests)
         shell: bash
