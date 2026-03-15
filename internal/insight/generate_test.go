@@ -263,7 +263,7 @@ func TestEnvKeyAllowed(t *testing.T) {
 
 func TestValidAgents(t *testing.T) {
 	for _, agent := range []string{
-		"claude", "codex", "gemini",
+		"claude", "codex", "copilot", "gemini",
 	} {
 		if !ValidAgents[agent] {
 			t.Errorf("%s should be valid", agent)
@@ -420,6 +420,79 @@ func TestGenerateCodex_CLIFlags(t *testing.T) {
 				i, args[i], want,
 			)
 		}
+	}
+}
+
+func TestGenerateCopilot_CLIFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test not supported on windows")
+	}
+
+	bin, argsFile := createMockBinary(
+		t, "Hello from copilot", 0, true, "copilot",
+	)
+
+	result, err := generateCopilot(
+		context.Background(), bin, "test prompt", nil,
+	)
+	if err != nil {
+		t.Fatalf("generateCopilot: %v", err)
+	}
+	if result.Content != "Hello from copilot" {
+		t.Errorf(
+			"Content = %q, want %q",
+			result.Content, "Hello from copilot",
+		)
+	}
+	if result.Agent != "copilot" {
+		t.Errorf("Agent = %q, want copilot", result.Agent)
+	}
+
+	argsData, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("reading args: %v", err)
+	}
+	args := strings.Split(
+		strings.TrimSpace(string(argsData)), "\n",
+	)
+
+	wantArgs := []string{
+		"-p", "test prompt",
+		"--silent",
+		"--no-custom-instructions",
+		"--no-ask-user",
+		"--available-tools",
+	}
+	if len(args) != len(wantArgs) {
+		t.Fatalf("args = %v, want %v", args, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if args[i] != want {
+			t.Errorf(
+				"arg[%d] = %q, want %q",
+				i, args[i], want,
+			)
+		}
+	}
+}
+
+func TestGenerateCopilot_EmptyResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test not supported on windows")
+	}
+
+	bin, _ := createMockBinary(
+		t, "", 0, false, "copilot",
+	)
+
+	_, err := generateCopilot(
+		context.Background(), bin, "test", nil,
+	)
+	if err == nil {
+		t.Fatal("expected error for empty result")
+	}
+	if !strings.Contains(err.Error(), "empty result") {
+		t.Errorf("error = %q, want empty result", err)
 	}
 }
 
