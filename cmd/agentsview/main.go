@@ -49,6 +49,9 @@ func main() {
 		case "sync":
 			runSync(os.Args[2:])
 			return
+		case "token-use":
+			runTokenUse(os.Args[2:])
+			return
 		case "version", "--version", "-v":
 			fmt.Printf("agentsview %s (commit %s, built %s)\n",
 				version, commit, buildDate)
@@ -73,6 +76,7 @@ Usage:
   agentsview [flags]          Start the server (default command)
   agentsview serve [flags]    Start the server (explicit)
   agentsview sync [flags]     Sync session data without serving
+  agentsview token-use <id>   Show token usage for a session (JSON)
   agentsview prune [flags]    Delete sessions matching filters
   agentsview update [flags]   Check for and install updates
   agentsview version          Show version information
@@ -324,6 +328,16 @@ func runServe(args []string) {
 			fatal("managed caddy error: %v", err)
 		}
 	}
+
+	stateFilePath, sfErr := server.WriteStateFile(
+		cfg.DataDir, cfg.Host, cfg.Port, version,
+	)
+	if sfErr != nil {
+		log.Printf("warning: could not write state file: %v", sfErr)
+	} else {
+		defer server.RemoveStateFile(cfg.DataDir, cfg.Port)
+	}
+	_ = stateFilePath
 
 	localURL := fmt.Sprintf("http://%s:%d", cfg.Host, cfg.Port)
 	publicURL := browserURL(cfg)
