@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -148,17 +149,35 @@ func envKeyAllowed(key string) bool {
 	return false
 }
 
+// pathValuedKeys lists env var keys whose values are file
+// paths. These must be resolved to absolute paths before
+// passing to subprocesses that run in a different directory.
+var pathValuedKeys = map[string]bool{
+	"GOOGLE_APPLICATION_CREDENTIALS": true,
+	"CURL_CA_BUNDLE":                 true,
+}
+
 // cleanEnv returns an allowlisted subset of the current
 // environment for agent CLI subprocesses, plus
-// CLAUDE_NO_SOUND=1.
+// CLAUDE_NO_SOUND=1. Path-valued env vars are resolved to
+// absolute paths so they remain valid when the subprocess
+// runs from a different working directory.
 func cleanEnv() []string {
 	env := os.Environ()
 	filtered := make([]string, 0, len(env))
 	for _, e := range env {
-		k, _, _ := strings.Cut(e, "=")
-		if envKeyAllowed(k) {
-			filtered = append(filtered, e)
+		k, v, _ := strings.Cut(e, "=")
+		if !envKeyAllowed(k) {
+			continue
 		}
+		if pathValuedKeys[strings.ToUpper(k)] &&
+			v != "" && !filepath.IsAbs(v) {
+			abs, err := filepath.Abs(v)
+			if err == nil {
+				e = k + "=" + abs
+			}
+		}
+		filtered = append(filtered, e)
 	}
 	return append(filtered, "CLAUDE_NO_SOUND=1")
 }
@@ -459,9 +478,19 @@ func parseCodexStream(
 // generateCopilot invokes `copilot -p <prompt> --silent`.
 // The prompt is passed as the -p argument (copilot does not
 // read prompts from stdin). Output is plain text on stdout.
+// An empty --config-dir isolates copilot from user-configured
+// MCP servers in ~/.copilot/.
 func generateCopilot(
 	ctx context.Context, path, prompt string, onLog LogFunc,
 ) (Result, error) {
+	configDir, err := os.MkdirTemp("", "copilot-insight-*")
+	if err != nil {
+		return Result{}, fmt.Errorf(
+			"create copilot config dir: %w", err,
+		)
+	}
+	defer os.RemoveAll(configDir)
+
 	cmd := exec.CommandContext(
 		ctx, path,
 		"-p", prompt,
@@ -469,6 +498,7 @@ func generateCopilot(
 		"--no-custom-instructions",
 		"--no-ask-user",
 		"--disable-builtin-mcps",
+		"--config-dir", configDir,
 	)
 	cmd.Dir = os.TempDir()
 	cmd.Env = cleanEnv()

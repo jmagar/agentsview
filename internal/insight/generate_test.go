@@ -228,6 +228,44 @@ func TestCleanEnv(t *testing.T) {
 	}
 }
 
+func TestCleanEnv_NormalizesRelativePaths(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "creds/svc.json")
+	t.Setenv("CURL_CA_BUNDLE", "certs/ca.pem")
+
+	env := cleanEnv()
+	envMap := make(map[string]string, len(env))
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		envMap[strings.ToUpper(k)] = v
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []string{
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"CURL_CA_BUNDLE",
+	} {
+		v, ok := envMap[key]
+		if !ok {
+			t.Fatalf("%s missing from env", key)
+		}
+		if !filepath.IsAbs(v) {
+			t.Errorf(
+				"%s = %q, want absolute path", key, v,
+			)
+		}
+		if !strings.HasPrefix(v, cwd) {
+			t.Errorf(
+				"%s = %q, want prefix %q",
+				key, v, cwd,
+			)
+		}
+	}
+}
+
 func TestEnvKeyAllowed(t *testing.T) {
 	tests := []struct {
 		key  string
@@ -472,21 +510,20 @@ func TestGenerateCopilot_CLIFlags(t *testing.T) {
 		strings.TrimSpace(string(argsData)), "\n",
 	)
 
-	wantArgs := []string{
-		"-p", "test prompt",
+	// --config-dir value is a dynamic temp path, so verify
+	// args as a joined string for the fixed flags.
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"-p test prompt",
 		"--silent",
 		"--no-custom-instructions",
 		"--no-ask-user",
 		"--disable-builtin-mcps",
-	}
-	if len(args) != len(wantArgs) {
-		t.Fatalf("args = %v, want %v", args, wantArgs)
-	}
-	for i, want := range wantArgs {
-		if args[i] != want {
+		"--config-dir",
+	} {
+		if !strings.Contains(joined, want) {
 			t.Errorf(
-				"arg[%d] = %q, want %q",
-				i, args[i], want,
+				"args %q missing %q", joined, want,
 			)
 		}
 	}
