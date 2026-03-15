@@ -468,7 +468,7 @@ func generateCopilot(
 		"--silent",
 		"--no-custom-instructions",
 		"--no-ask-user",
-		"--available-tools",
+		"--disable-builtin-mcps",
 	)
 	cmd.Dir = os.TempDir()
 	cmd.Env = cleanEnv()

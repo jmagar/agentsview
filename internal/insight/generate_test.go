@@ -477,7 +477,7 @@ func TestGenerateCopilot_CLIFlags(t *testing.T) {
 		"--silent",
 		"--no-custom-instructions",
 		"--no-ask-user",
-		"--available-tools",
+		"--disable-builtin-mcps",
 	}
 	if len(args) != len(wantArgs) {
 		t.Fatalf("args = %v, want %v", args, wantArgs)
