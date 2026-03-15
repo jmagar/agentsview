@@ -213,8 +213,11 @@ func generateClaude(
 	cmd := exec.CommandContext(
 		ctx, path,
 		"-p", "--output-format", "json",
+		"--no-session-persistence",
+		"--tools", "",
 	)
-	cmd.Env = append(os.Environ(), "CLAUDE_NO_SOUND=1")
+	cmd.Dir = os.TempDir()
+	cmd.Env = cleanEnv()
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -299,8 +302,13 @@ func generateCodex(
 	cmd := exec.CommandContext(
 		ctx, path,
 		"exec", "--json",
-		"--sandbox", "read-only", "-",
+		"--sandbox", "read-only",
+		"--skip-git-repo-check",
+		"--ephemeral",
+		"-",
 	)
+	cmd.Dir = os.TempDir()
+	cmd.Env = cleanEnv()
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -442,7 +450,10 @@ func generateGemini(
 		ctx, path,
 		"--model", geminiInsightModel,
 		"--output-format", "stream-json",
+		"--sandbox",
 	)
+	cmd.Dir = os.TempDir()
+	cmd.Env = cleanEnv()
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdoutPipe, err := cmd.StdoutPipe()

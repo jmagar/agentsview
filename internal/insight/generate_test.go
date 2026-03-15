@@ -329,6 +329,100 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
+func TestGenerateClaude_CLIFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test not supported on windows")
+	}
+
+	stdout := `{"result":"OK","model":"m1"}`
+	bin, argsFile := createMockBinary(
+		t, stdout, 0, true, "claude",
+	)
+
+	result, err := generateClaude(
+		context.Background(), bin, "test prompt", nil,
+	)
+	if err != nil {
+		t.Fatalf("generateClaude: %v", err)
+	}
+	if result.Content != "OK" {
+		t.Errorf("Content = %q, want OK", result.Content)
+	}
+
+	argsData, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("reading args: %v", err)
+	}
+	args := strings.Split(
+		strings.TrimSpace(string(argsData)), "\n",
+	)
+
+	// The empty string value for --tools is lost by the
+	// shell printf, so verify args as a joined string.
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"-p",
+		"--output-format json",
+		"--no-session-persistence",
+		"--tools",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf(
+				"args %q missing %q", joined, want,
+			)
+		}
+	}
+}
+
+func TestGenerateCodex_CLIFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test not supported on windows")
+	}
+
+	stdout := `{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"OK"}}
+`
+	bin, argsFile := createMockBinary(
+		t, stdout, 0, true, "codex",
+	)
+
+	result, err := generateCodex(
+		context.Background(), bin, "test prompt", nil,
+	)
+	if err != nil {
+		t.Fatalf("generateCodex: %v", err)
+	}
+	if result.Content != "OK" {
+		t.Errorf("Content = %q, want OK", result.Content)
+	}
+
+	argsData, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("reading args: %v", err)
+	}
+	args := strings.Split(
+		strings.TrimSpace(string(argsData)), "\n",
+	)
+
+	wantArgs := []string{
+		"exec", "--json",
+		"--sandbox", "read-only",
+		"--skip-git-repo-check",
+		"--ephemeral",
+		"-",
+	}
+	if len(args) != len(wantArgs) {
+		t.Fatalf("args = %v, want %v", args, wantArgs)
+	}
+	for i, want := range wantArgs {
+		if args[i] != want {
+			t.Errorf(
+				"arg[%d] = %q, want %q",
+				i, args[i], want,
+			)
+		}
+	}
+}
+
 func TestGenerateClaude_SalvageOnNonZeroExit(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -460,6 +554,7 @@ func TestGenerateGemini_ModelFlag(t *testing.T) {
 	wantArgs := []string{
 		"--model", geminiInsightModel,
 		"--output-format", "stream-json",
+		"--sandbox",
 	}
 	if len(args) != len(wantArgs) {
 		t.Fatalf("args = %v, want %v", args, wantArgs)

@@ -83,7 +83,8 @@ func TestBuildPrompt(t *testing.T) {
 				Prompt:   "Focus on security improvements",
 			},
 			wantContains: []string{
-				"Additional Context",
+				"User Query",
+				"Prioritize addressing",
 				"Focus on security improvements",
 			},
 		},

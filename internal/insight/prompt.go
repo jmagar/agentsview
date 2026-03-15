@@ -110,7 +110,12 @@ func BuildPrompt(
 	}
 
 	if req.Prompt != "" {
-		b.WriteString("## Additional Context\n\n")
+		b.WriteString("## User Query\n\n")
+		b.WriteString(
+			"The user has provided the following " +
+				"specific request. Prioritize addressing " +
+				"this in your response:\n\n",
+		)
 		b.WriteString(req.Prompt)
 		b.WriteString("\n")
 	}
