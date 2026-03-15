@@ -556,6 +556,36 @@ func (db *DB) GetChildSessions(
 	return scanSessionRows(rows)
 }
 
+// LinkSubagentSessions sets parent_session_id and
+// relationship_type on sessions that are referenced by
+// tool_calls.subagent_session_id. Updates sessions that either
+// have no parent yet or have a non-subagent relationship (e.g.
+// a Zencoder session classified as "continuation" from header
+// parentId that is actually a spawned subagent).
+func (db *DB) LinkSubagentSessions() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.getWriter().Exec(`
+		UPDATE sessions
+		SET parent_session_id = (
+			SELECT tc.session_id
+			FROM tool_calls tc
+			WHERE tc.subagent_session_id = sessions.id
+			LIMIT 1
+		),
+		relationship_type = 'subagent'
+		WHERE relationship_type != 'subagent'
+		AND EXISTS (
+			SELECT 1 FROM tool_calls tc
+			WHERE tc.subagent_session_id = sessions.id
+		)`)
+	if err != nil {
+		return fmt.Errorf("linking subagent sessions: %w", err)
+	}
+	return nil
+}
+
 // GetSessionFileInfo returns file_size and file_mtime for a
 // session. Used for fast skip checks during sync.
 func (db *DB) GetSessionFileInfo(
@@ -570,6 +600,19 @@ func (db *DB) GetSessionFileInfo(
 		return 0, 0, false
 	}
 	return s.Int64, m.Int64, true
+}
+
+// GetSessionFilePath returns the stored file_path for a session,
+// or empty string if not found or NULL.
+func (db *DB) GetSessionFilePath(id string) string {
+	var fp sql.NullString
+	err := db.getReader().QueryRow(
+		"SELECT file_path FROM sessions WHERE id = ?", id,
+	).Scan(&fp)
+	if err != nil || !fp.Valid {
+		return ""
+	}
+	return fp.String
 }
 
 // GetSessionMessageCount returns the message_count for a
@@ -948,7 +991,8 @@ func (db *DB) FindPruneCandidates(
 	if f.MaxMessages != nil {
 		where += ` AND (SELECT COUNT(*) FROM messages
 			WHERE messages.session_id = sessions.id
-			AND messages.role = 'user') <= ?`
+			AND messages.role = 'user'
+			AND messages.is_system = 0) <= ?`
 		args = append(args, *f.MaxMessages)
 	}
 	if f.Before != "" {

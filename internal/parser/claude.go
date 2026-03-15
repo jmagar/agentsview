@@ -655,8 +655,10 @@ func extractMessages(entries []dagEntry) (
 	return messages, startedAt, endedAt
 }
 
-// annotateSubagentSessions sets SubagentSessionID on Task tool calls
-// whose ToolUseID appears in the subagentMap.
+// annotateSubagentSessions sets SubagentSessionID on tool calls
+// whose ToolUseID appears in the subagentMap. Only tool calls that
+// represent subagent invocations (category "Task" or name containing
+// "subagent") are annotated.
 func annotateSubagentSessions(
 	messages []ParsedMessage, subagentMap map[string]string,
 ) {
@@ -666,8 +668,12 @@ func annotateSubagentSessions(
 	for i := range messages {
 		for j := range messages[i].ToolCalls {
 			tc := &messages[i].ToolCalls[j]
-			if (tc.ToolName == "Task" || tc.ToolName == "Agent") && tc.ToolUseID != "" {
-				if sid, ok := subagentMap[tc.ToolUseID]; ok {
+			if tc.ToolUseID == "" {
+				continue
+			}
+			if sid, ok := subagentMap[tc.ToolUseID]; ok {
+				if tc.Category == "Task" ||
+					strings.Contains(tc.ToolName, "subagent") {
 					tc.SubagentSessionID = sid
 				}
 			}

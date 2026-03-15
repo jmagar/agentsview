@@ -1082,6 +1082,100 @@ func TestReplaceSessionMessages(t *testing.T) {
 	}
 }
 
+func TestGetSessionFilePath(t *testing.T) {
+	d := testDB(t)
+
+	fp := "/tmp/sessions/abc.jsonl"
+	insertSession(t, d, "zencoder:abc", "p", func(s *Session) {
+		s.FilePath = &fp
+	})
+
+	got := d.GetSessionFilePath("zencoder:abc")
+	if got != fp {
+		t.Errorf("GetSessionFilePath = %q, want %q", got, fp)
+	}
+
+	// Non-existent session returns empty.
+	got = d.GetSessionFilePath("zencoder:nonexistent")
+	if got != "" {
+		t.Errorf("GetSessionFilePath(missing) = %q, want empty",
+			got)
+	}
+}
+
+func TestLinkSubagentSessionsOverridesContinuation(t *testing.T) {
+	d := testDB(t)
+
+	// Parent session with a tool call referencing a child.
+	insertSession(t, d, "parent", "p", func(s *Session) {
+		s.MessageCount = 1
+	})
+	// Child session initially classified as continuation
+	// (e.g. Zencoder header parentId).
+	insertSession(t, d, "child", "p", func(s *Session) {
+		s.MessageCount = 1
+		parentID := "header-parent"
+		s.ParentSessionID = &parentID
+		s.RelationshipType = "continuation"
+	})
+
+	// Insert a message with a tool call that references the child.
+	m := Message{
+		SessionID: "parent", Ordinal: 0,
+		Role: "assistant", Content: "spawning subagent",
+		HasToolUse: true,
+		ToolCalls: []ToolCall{{
+			ToolName:          "subagent",
+			Category:          "Task",
+			SubagentSessionID: "child",
+		}},
+	}
+	insertMessages(t, d, m)
+
+	// Link should override continuation -> subagent.
+	if err := d.LinkSubagentSessions(); err != nil {
+		t.Fatalf("LinkSubagentSessions: %v", err)
+	}
+
+	sess, err := d.GetSession(context.Background(), "child")
+	requireNoError(t, err, "GetSession")
+	if sess.RelationshipType != "subagent" {
+		t.Errorf("relationship_type = %q, want 'subagent'",
+			sess.RelationshipType)
+	}
+	if sess.ParentSessionID == nil ||
+		*sess.ParentSessionID != "parent" {
+		t.Errorf("parent_session_id = %v, want 'parent'",
+			sess.ParentSessionID)
+	}
+}
+
+func TestIsSystemPersisted(t *testing.T) {
+	d := testDB(t)
+
+	insertSession(t, d, "s1", "p", func(s *Session) {
+		s.MessageCount = 2
+	})
+
+	m1 := userMsg("s1", 0, "normal user message")
+	m2 := userMsg("s1", 1, "system injected notice")
+	m2.IsSystem = true
+
+	insertMessages(t, d, m1, m2)
+
+	msgs, err := d.GetAllMessages(context.Background(), "s1")
+	requireNoError(t, err, "GetAllMessages")
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[0].IsSystem {
+		t.Error("msgs[0].IsSystem = true, want false")
+	}
+	if !msgs[1].IsSystem {
+		t.Error("msgs[1].IsSystem = false, want true")
+	}
+}
+
 func TestSearch(t *testing.T) {
 	d := testDB(t)
 	requireFTS(t, d)
@@ -1106,6 +1200,36 @@ func TestSearch(t *testing.T) {
 	}
 	if page.Results[0].SessionID != "s1" {
 		t.Errorf("session_id = %q", page.Results[0].SessionID)
+	}
+}
+
+func TestSearchExcludesSystemMessages(t *testing.T) {
+	d := testDB(t)
+	requireFTS(t, d)
+
+	insertSession(t, d, "s1", "p", func(s *Session) {
+		s.MessageCount = 3
+	})
+
+	m1 := userMsg("s1", 0, "unique searchterm here")
+	m2 := userMsg("s1", 1, "system unique searchterm notice")
+	m2.IsSystem = true
+	m3 := asstMsg("s1", 2, "response to user")
+
+	insertMessages(t, d, m1, m2, m3)
+
+	page, err := d.Search(context.Background(), SearchFilter{
+		Query: "searchterm",
+		Limit: 10,
+	})
+	requireNoError(t, err, "Search")
+	// Only the non-system message should appear
+	if len(page.Results) != 1 {
+		t.Fatalf("got %d results, want 1 (system msg excluded)",
+			len(page.Results))
+	}
+	if page.Results[0].Ordinal != 0 {
+		t.Errorf("ordinal = %d, want 0", page.Results[0].Ordinal)
 	}
 }
 
@@ -1630,6 +1754,43 @@ func TestFindPruneCandidatesMaxMessagesSentinel(t *testing.T) {
 	}
 	if got[0].ID != "m1" {
 		t.Errorf("MaxMessages 0: got %q, want m1", got[0].ID)
+	}
+}
+
+func TestFindPruneCandidatesIgnoresSystemMessages(t *testing.T) {
+	d := testDB(t)
+
+	// Session with 1 real user message and 2 system user
+	// messages (Zencoder skill/finish). Only the real one
+	// should count toward MaxMessages.
+	insertSession(t, d, "zen1", "proj")
+	realMsg := userMsg("zen1", 0, "real user msg")
+	sysMsg1 := userMsg("zen1", 1, "system init")
+	sysMsg1.IsSystem = true
+	sysMsg2 := userMsg("zen1", 2, "skill finish")
+	sysMsg2.IsSystem = true
+	insertMessages(t, d, realMsg, sysMsg1, sysMsg2)
+
+	// MaxMessages=1 should include zen1 (1 real user msg).
+	got, err := d.FindPruneCandidates(
+		PruneFilter{MaxMessages: Ptr(1)},
+	)
+	requireNoError(t, err, "FindPruneCandidates")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(got))
+	}
+	if got[0].ID != "zen1" {
+		t.Errorf("got %q, want zen1", got[0].ID)
+	}
+
+	// MaxMessages=0 should NOT include zen1 (it has 1 real
+	// user message).
+	got, err = d.FindPruneCandidates(
+		PruneFilter{MaxMessages: Ptr(0)},
+	)
+	requireNoError(t, err, "FindPruneCandidates")
+	if len(got) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(got))
 	}
 }
 
@@ -3319,6 +3480,121 @@ func TestCopyOrphanedDataFrom_AtomicOnFailure(t *testing.T) {
 			"expected 0 sessions after failed copy, got %d",
 			len(page.Sessions),
 		)
+	}
+}
+
+func TestCopyOrphanedDataFrom_IsSystem(t *testing.T) {
+	dir := t.TempDir()
+
+	// Source DB with a session containing a system message.
+	srcPath := filepath.Join(dir, "old.db")
+	srcDB, err := Open(srcPath)
+	requireNoError(t, err, "Open src")
+	insertSession(t, srcDB, "s1", "proj")
+	m := userMsg("s1", 0, "system init")
+	m.IsSystem = true
+	insertMessages(t, srcDB, m, asstMsg("s1", 1, "reply"))
+	srcDB.Close()
+
+	// Empty destination.
+	dstPath := filepath.Join(dir, "new.db")
+	dstDB, err := Open(dstPath)
+	requireNoError(t, err, "Open dst")
+	defer dstDB.Close()
+
+	count, err := dstDB.CopyOrphanedDataFrom(srcPath)
+	requireNoError(t, err, "CopyOrphanedDataFrom")
+	if count != 1 {
+		t.Fatalf("expected 1 orphaned, got %d", count)
+	}
+
+	// Verify is_system was preserved.
+	msgs, err := dstDB.GetMessages(
+		context.Background(), "s1", 0, 100, true,
+	)
+	requireNoError(t, err, "GetMessages")
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	if !msgs[0].IsSystem {
+		t.Error("ordinal 0: is_system should be true")
+	}
+	if msgs[1].IsSystem {
+		t.Error("ordinal 1: is_system should be false")
+	}
+}
+
+func TestCopyOrphanedDataFrom_LegacyNoIsSystem(t *testing.T) {
+	dir := t.TempDir()
+
+	// Source DB with is_system column removed to simulate
+	// a legacy database.
+	srcPath := filepath.Join(dir, "old.db")
+	srcDB, err := Open(srcPath)
+	requireNoError(t, err, "Open src")
+	insertSession(t, srcDB, "s1", "proj")
+	insertMessages(t, srcDB, userMsg("s1", 0, "hello"))
+	srcDB.Close()
+
+	// Drop is_system via raw SQL to simulate legacy schema.
+	raw, err := sql.Open("sqlite3", srcPath)
+	requireNoError(t, err, "raw open")
+	// SQLite doesn't support DROP COLUMN before 3.35;
+	// recreate the table without is_system.
+	_, err = raw.Exec(`
+		CREATE TABLE messages_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			ordinal INTEGER NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL DEFAULT '',
+			timestamp TEXT NOT NULL DEFAULT '',
+			has_thinking INTEGER NOT NULL DEFAULT 0,
+			has_tool_use INTEGER NOT NULL DEFAULT 0,
+			content_length INTEGER NOT NULL DEFAULT 0
+		)`)
+	requireNoError(t, err, "create messages_new")
+	_, err = raw.Exec(`
+		INSERT INTO messages_new
+			(id, session_id, ordinal, role, content,
+			 timestamp, has_thinking, has_tool_use,
+			 content_length)
+		SELECT id, session_id, ordinal, role, content,
+			timestamp, has_thinking, has_tool_use,
+			content_length
+		FROM messages`)
+	requireNoError(t, err, "copy to messages_new")
+	_, err = raw.Exec("DROP TABLE messages")
+	requireNoError(t, err, "drop messages")
+	_, err = raw.Exec(
+		"ALTER TABLE messages_new RENAME TO messages",
+	)
+	requireNoError(t, err, "rename messages_new")
+	raw.Close()
+
+	// Empty destination (has is_system column).
+	dstPath := filepath.Join(dir, "new.db")
+	dstDB, err := Open(dstPath)
+	requireNoError(t, err, "Open dst")
+	defer dstDB.Close()
+
+	count, err := dstDB.CopyOrphanedDataFrom(srcPath)
+	requireNoError(t, err, "CopyOrphanedDataFrom")
+	if count != 1 {
+		t.Fatalf("expected 1 orphaned, got %d", count)
+	}
+
+	// Message should be copied with is_system defaulting to
+	// false.
+	msgs, err := dstDB.GetMessages(
+		context.Background(), "s1", 0, 100, true,
+	)
+	requireNoError(t, err, "GetMessages")
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].IsSystem {
+		t.Error("is_system should default to false")
 	}
 }
 

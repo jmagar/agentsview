@@ -112,20 +112,18 @@ func (d *DB) CopyOrphanedDataFrom(
 
 	// Copy messages. Omit id to let auto-increment assign
 	// new IDs (old IDs may collide with freshly synced
-	// messages).
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO messages
-			(session_id, ordinal, role, content,
-			 timestamp, has_thinking, has_tool_use,
-			 content_length)
-		SELECT
-			session_id, ordinal, role, content,
-			timestamp, has_thinking, has_tool_use,
-			content_length
-		FROM old_db.messages
-		WHERE session_id IN (
-			SELECT id FROM _orphaned_ids
-		)`,
+	// messages). Probe is_system so older source DBs that
+	// lack the column don't abort the migration.
+	msgCols := "session_id, ordinal, role, content, " +
+		"timestamp, has_thinking, has_tool_use, " +
+		"content_length"
+	if oldDBHasColumn(ctx, tx, "messages", "is_system") {
+		msgCols += ", is_system"
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO messages ("+msgCols+") "+
+			"SELECT "+msgCols+" FROM old_db.messages "+
+			"WHERE session_id IN (SELECT id FROM _orphaned_ids)",
 	); err != nil {
 		return 0, fmt.Errorf(
 			"copying orphaned messages: %w", err,

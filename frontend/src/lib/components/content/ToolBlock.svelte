@@ -129,7 +129,8 @@
   let isTask = $derived(
     toolCall?.tool_name === "Task" ||
       toolCall?.tool_name === "Agent" ||
-      toolCall?.category === "Task",
+      toolCall?.category === "Task" ||
+      (toolCall?.tool_name?.includes("subagent") ?? false),
   );
 
   let taskPrompt = $derived(

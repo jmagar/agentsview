@@ -1949,6 +1949,101 @@ func TestAnalyticsFilterAgentAndMinUserMessages(
 	})
 }
 
+func TestAutonomyExcludesSystemMessages(t *testing.T) {
+	d := testDB(t)
+
+	insertSession(t, d, "s1", "proj", func(s *Session) {
+		s.Agent = "zencoder"
+		s.StartedAt = Ptr(tsMidYear)
+		s.EndedAt = Ptr(tsMidYear)
+		s.MessageCount = 4
+	})
+
+	msgs := []Message{
+		{SessionID: "s1", Ordinal: 0, Role: "user",
+			Content: "system banner", ContentLength: 13,
+			Timestamp: tsMidYear, IsSystem: true},
+		{SessionID: "s1", Ordinal: 1, Role: "user",
+			Content: "real question", ContentLength: 13,
+			Timestamp: tsMidYear},
+		{SessionID: "s1", Ordinal: 2, Role: "assistant",
+			Content: "answer", ContentLength: 6,
+			Timestamp: tsMidYear, HasToolUse: true},
+		{SessionID: "s1", Ordinal: 3, Role: "user",
+			Content: "finish marker", ContentLength: 13,
+			Timestamp: tsMidYear, IsSystem: true},
+	}
+	insertMessages(t, d, msgs...)
+
+	resp, err := d.GetAnalyticsSessionShape(
+		context.Background(),
+		AnalyticsFilter{
+			From: "2024-01-01", To: "2024-12-31",
+		},
+	)
+	requireNoError(t, err, "GetAnalyticsSessionShape")
+
+	// The autonomy ratio should be based on 1 real user message
+	// (not 3), yielding ratio = 1/1 = 1.0 -> bucket "1-2".
+	for _, b := range resp.AutonomyDistribution {
+		if b.Label == "1-2" && b.Count == 1 {
+			return // found the expected bucket
+		}
+	}
+	t.Errorf("expected autonomy bucket '1-2' with count 1, got %v",
+		resp.AutonomyDistribution)
+}
+
+func TestActivityExcludesSystemUserMessages(t *testing.T) {
+	d := testDB(t)
+
+	insertSession(t, d, "s1", "proj", func(s *Session) {
+		s.Agent = "zencoder"
+		s.StartedAt = Ptr(tsMidYear)
+		s.EndedAt = Ptr(tsMidYear)
+		s.MessageCount = 3
+	})
+
+	msgs := []Message{
+		{SessionID: "s1", Ordinal: 0, Role: "user",
+			Content: "system banner", ContentLength: 13,
+			Timestamp: tsMidYear, IsSystem: true},
+		{SessionID: "s1", Ordinal: 1, Role: "user",
+			Content: "real question", ContentLength: 13,
+			Timestamp: tsMidYear},
+		{SessionID: "s1", Ordinal: 2, Role: "assistant",
+			Content: "answer", ContentLength: 6,
+			Timestamp: tsMidYear},
+	}
+	insertMessages(t, d, msgs...)
+
+	resp, err := d.GetAnalyticsActivity(
+		context.Background(),
+		AnalyticsFilter{
+			From: "2024-01-01", To: "2024-12-31",
+		},
+		"day",
+	)
+	requireNoError(t, err, "GetAnalyticsActivity")
+
+	if len(resp.Series) != 1 {
+		t.Fatalf("got %d entries, want 1", len(resp.Series))
+	}
+	entry := resp.Series[0]
+	// 3 total messages but only 1 real user message
+	if entry.Messages != 3 {
+		t.Errorf("Messages = %d, want 3", entry.Messages)
+	}
+	if entry.UserMessages != 1 {
+		t.Errorf("UserMessages = %d, want 1 (system excluded)",
+			entry.UserMessages)
+	}
+	if entry.AssistantMessages != 1 {
+		t.Errorf("AssistantMessages = %d, want 1",
+			entry.AssistantMessages)
+	}
+}
+
 func TestLocalTime(t *testing.T) {
 	tests := []struct {
 		name  string

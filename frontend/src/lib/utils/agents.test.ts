@@ -16,6 +16,7 @@ describe("KNOWN_AGENTS", () => {
       "opencode",
       "cursor",
       "amp",
+      "zencoder",
       "vscode-copilot",
       "pi",
       "openclaw",
@@ -52,6 +53,9 @@ describe("agentColor", () => {
     );
     expect(agentColor("amp")).toBe(
       "var(--accent-coral)",
+    );
+    expect(agentColor("zencoder")).toBe(
+      "var(--accent-red)",
     );
     expect(agentColor("pi")).toBe(
       "var(--accent-indigo)",

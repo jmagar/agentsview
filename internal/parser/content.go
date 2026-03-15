@@ -258,6 +258,11 @@ func formatToolUse(block gjson.Result) string {
 		}
 		return fmt.Sprintf("[SendMessage: %s]", msgType)
 	default:
+		// MCP tools may have a server prefix (e.g.
+		// "Zencoder_subagent__ZencoderSubagent").
+		if strings.Contains(name, "subagent") {
+			return formatTask(input)
+		}
 		return fmt.Sprintf("[Tool: %s]", name)
 	}
 }
@@ -316,7 +321,19 @@ func formatBash(input gjson.Result) string {
 
 func formatTask(input gjson.Result) string {
 	desc := input.Get("description").Str
+	if desc == "" {
+		desc = input.Get("prompt").Str
+	}
 	agentType := input.Get("subagent_type").Str
+	if agentType == "" {
+		agentType = input.Get("agent").Str
+	}
+	if desc == "" && agentType == "" {
+		return "[Task]"
+	}
+	if agentType == "" {
+		return fmt.Sprintf("[Task: %s]", desc)
+	}
 	return fmt.Sprintf("[Task: %s (%s)]", desc, agentType)
 }
 

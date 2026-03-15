@@ -1,5 +1,7 @@
 package parser
 
+import "strings"
+
 // NormalizeToolCategory maps a raw tool name to a normalized
 // category. Categories: Read, Edit, Write, Bash, Grep, Glob,
 // Task, Tool, Other.
@@ -112,7 +114,23 @@ func NormalizeToolCategory(rawName string) string {
 	case "subagents", "agents_list", "session_status":
 		return "Task"
 
+	// Zencoder tools (not already covered above)
+	case "WebFetch":
+		return "Read"
+	case "TodoWrite":
+		return "Tool"
+	case "subagent__ZencoderSubagent":
+		return "Task"
+	case "zencoder-rag-mcp__web_search":
+		return "Read"
+
 	default:
+		// MCP tools may carry a server prefix (e.g.
+		// "Zencoder_subagent__ZencoderSubagent") or use
+		// spawn_subagent naming ("mcp__zen_subagents__spawn_subagent").
+		if strings.Contains(rawName, "subagent") {
+			return "Task"
+		}
 		return "Other"
 	}
 }

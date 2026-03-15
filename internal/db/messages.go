@@ -11,10 +11,12 @@ import (
 
 const (
 	selectMessageCols = `id, session_id, ordinal, role, content,
-		timestamp, has_thinking, has_tool_use, content_length`
+		timestamp, has_thinking, has_tool_use, content_length,
+		is_system`
 
 	insertMessageCols = `session_id, ordinal, role, content,
-		timestamp, has_thinking, has_tool_use, content_length`
+		timestamp, has_thinking, has_tool_use, content_length,
+		is_system`
 
 	// DefaultMessageLimit is the default number of messages returned.
 	DefaultMessageLimit = 100
@@ -60,7 +62,8 @@ type Message struct {
 	HasToolUse    bool         `json:"has_tool_use"`
 	ContentLength int          `json:"content_length"`
 	ToolCalls     []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults   []ToolResult `json:"-"` // transient, for pairing
+	ToolResults   []ToolResult `json:"-"`         // transient, for pairing
+	IsSystem      bool         `json:"is_system"` // persisted, filters search/analytics
 }
 
 // MinimapEntry is a lightweight message summary for minimap rendering.
@@ -204,7 +207,7 @@ func (db *DB) insertMessagesTx(
 ) ([]int64, error) {
 	stmt, err := tx.Prepare(fmt.Sprintf(`
 		INSERT INTO messages (%s)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, insertMessageCols))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, insertMessageCols))
 	if err != nil {
 		return nil, fmt.Errorf("preparing insert: %w", err)
 	}
@@ -215,7 +218,7 @@ func (db *DB) insertMessagesTx(
 		res, err := stmt.Exec(
 			m.SessionID, m.Ordinal, m.Role, m.Content,
 			m.Timestamp, m.HasThinking, m.HasToolUse,
-			m.ContentLength,
+			m.ContentLength, m.IsSystem,
 		)
 		if err != nil {
 			return nil, fmt.Errorf(
@@ -498,6 +501,7 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 			&m.ID, &m.SessionID, &m.Ordinal, &m.Role,
 			&m.Content, &m.Timestamp,
 			&m.HasThinking, &m.HasToolUse, &m.ContentLength,
+			&m.IsSystem,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scanning message: %w", err)
@@ -532,6 +536,7 @@ func (db *DB) GetMessageByOrdinal(
 		&m.ID, &m.SessionID, &m.Ordinal, &m.Role,
 		&m.Content, &m.Timestamp,
 		&m.HasThinking, &m.HasToolUse, &m.ContentLength,
+		&m.IsSystem,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil

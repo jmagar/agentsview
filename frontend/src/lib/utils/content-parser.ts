@@ -1,7 +1,7 @@
 import type { Message, ToolCall } from "../api/types.js";
 import { LRUCache } from "./cache.js";
 
-export type SegmentType = "text" | "thinking" | "tool" | "code";
+export type SegmentType = "text" | "thinking" | "tool" | "code" | "skill";
 
 export interface ContentSegment {
   type: SegmentType;
@@ -25,6 +25,13 @@ const THINKING_MARKED_RE =
  */
 const THINKING_LEGACY_RE =
   /\[Thinking\]\n?([\s\S]*?)(?=\n\[|\n\n|$)/g;
+
+/**
+ * Skill blocks use [Skill: name]...[/Skill] delimiters,
+ * same pattern as thinking blocks.
+ */
+const SKILL_RE =
+  /\[Skill: (.+?)\]\n?([\s\S]*?)\n?\[\/Skill\]/g;
 
 const TOOL_NAMES =
   "Tool|Read|Write|Edit|Bash|Glob|Grep|Other|TaskCreate|TaskUpdate|TaskGet|TaskList|Task|Agent|Skill|" +
@@ -210,6 +217,26 @@ function extractMatches(text: string, parseTools = true): Match[] {
       segment: {
         type: "thinking",
         content: (m[1] ?? "").trim(),
+      },
+    });
+  }
+
+  // Skill blocks
+  for (const m of text.matchAll(SKILL_RE)) {
+    const start = m.index!;
+    const end = start + m[0].length;
+    if (insideInlineCode(start, codeSpans)) continue;
+    const overlaps = matches.some(
+      (o) => start >= o.start && start < o.end,
+    );
+    if (overlaps) continue;
+    matches.push({
+      start,
+      end,
+      segment: {
+        type: "skill",
+        content: (m[2] ?? "").trim(),
+        label: m[1] ?? "",
       },
     });
   }
@@ -468,6 +495,7 @@ export function hasVisibleSegments(
   if (segs.length === 0) return isVisible(role);
   return segs.some((s) => {
     if (s.type === "text") return isVisible(role);
+    if (s.type === "skill") return isVisible(role);
     return isVisible(s.type);
   });
 }

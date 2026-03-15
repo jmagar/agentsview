@@ -9,6 +9,7 @@
   import ThinkingBlock from "./ThinkingBlock.svelte";
   import ToolBlock from "./ToolBlock.svelte";
   import CodeBlock from "./CodeBlock.svelte";
+  import SkillBlock from "./SkillBlock.svelte";
   import { ui } from "../../stores/ui.svelte.js";
   import { pins } from "../../stores/pins.svelte.js";
   import { sessions } from "../../stores/sessions.svelte.js";
@@ -215,6 +216,10 @@
       {:else if segment.type === "code"}
         {#if ui.isBlockVisible("code")}
           <CodeBlock content={segment.content} language={segment.label} />
+        {/if}
+      {:else if segment.type === "skill"}
+        {#if showText}
+          <SkillBlock content={segment.content} name={segment.label} />
         {/if}
       {:else}
         {#if showText}

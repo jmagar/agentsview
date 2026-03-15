@@ -516,11 +516,11 @@ func (db *DB) GetAnalyticsActivity(
 	}
 
 	query := `SELECT ` + dateCol + `, s.agent, s.id,
-		m.role, m.has_thinking, COUNT(*)
+		m.role, m.has_thinking, m.is_system, COUNT(*)
 		FROM sessions s
 		LEFT JOIN messages m ON m.session_id = s.id
 		WHERE ` + where + `
-		GROUP BY s.id, m.role, m.has_thinking`
+		GROUP BY s.id, m.role, m.has_thinking, m.is_system`
 
 	rows, err := db.getReader().QueryContext(ctx, query, args...)
 	if err != nil {
@@ -536,11 +536,11 @@ func (db *DB) GetAnalyticsActivity(
 	for rows.Next() {
 		var ts, agent, sid string
 		var role *string
-		var hasThinking *bool
+		var hasThinking, isSystem *bool
 		var count int
 		if err := rows.Scan(
 			&ts, &agent, &sid, &role,
-			&hasThinking, &count,
+			&hasThinking, &isSystem, &count,
 		); err != nil {
 			return ActivityResponse{},
 				fmt.Errorf("scanning activity row: %w", err)
@@ -571,12 +571,15 @@ func (db *DB) GetAnalyticsActivity(
 			entry.Sessions++
 		}
 
+		sys := isSystem != nil && *isSystem
 		if role != nil {
 			entry.Messages += count
 			entry.ByAgent[agent] += count
 			switch *role {
 			case "user":
-				entry.UserMessages += count
+				if !sys {
+					entry.UserMessages += count
+				}
 			case "assistant":
 				entry.AssistantMessages += count
 			}
@@ -1297,7 +1300,8 @@ func (db *DB) queryAutonomyChunk(
 ) error {
 	ph, args := inPlaceholders(chunk)
 	q := `SELECT session_id,
-		SUM(CASE WHEN role='user' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN role='user' AND is_system=0
+			THEN 1 ELSE 0 END),
 		SUM(CASE WHEN role='assistant'
 			AND has_tool_use=1 THEN 1 ELSE 0 END)
 		FROM messages

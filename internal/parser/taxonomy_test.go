@@ -64,6 +64,15 @@ func TestNormalizeToolCategory(t *testing.T) {
 		{"view", "Read"},
 		{"report_intent", "Tool"},
 
+		// Zencoder tools
+		{"WebFetch", "Read"},
+		{"TodoWrite", "Tool"},
+		{"subagent__ZencoderSubagent", "Task"},
+		{"zencoder-rag-mcp__web_search", "Read"},
+		// Zencoder MCP-prefixed subagent variants
+		{"Zencoder_subagent__ZencoderSubagent", "Task"},
+		{"mcp__zen_subagents__spawn_subagent", "Task"},
+
 		// Unknown
 		{"view_image", "Other"},
 		{"update_plan", "Other"},
