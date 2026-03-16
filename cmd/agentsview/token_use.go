@@ -66,15 +66,18 @@ func tokenUse(sessionID string) error {
 	// live PID but the TCP probe is transiently failing,
 	// the server is running and we should just read the DB.
 	if serverActive &&
-		server.FindRunningServer(appCfg.DataDir) == nil &&
-		server.IsStartupLocked(appCfg.DataDir) {
-		fmt.Fprintf(os.Stderr,
-			"server is starting up, waiting...\n")
-		if !server.WaitForStartup(
-			appCfg.DataDir, startupWaitTimeout,
-		) {
-			// Startup didn't complete — fall through to
-			// on-demand sync below.
+		server.FindRunningServer(appCfg.DataDir) == nil {
+		if server.IsStartupLocked(appCfg.DataDir) {
+			fmt.Fprintf(os.Stderr,
+				"server is starting up, waiting...\n")
+			if !server.WaitForStartup(
+				appCfg.DataDir, startupWaitTimeout,
+			) {
+				serverActive = false
+			}
+		} else if !server.IsServerActive(appCfg.DataDir) {
+			// The server that was alive at the first check
+			// has since exited. Fall back to on-demand sync.
 			serverActive = false
 		}
 	}
