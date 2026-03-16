@@ -138,9 +138,13 @@ func tokenUse(sessionID string) error {
 			} else if !server.IsStartupLocked(
 				appCfg.DataDir,
 			) {
-				// Lock cleared, no running server —
-				// startup failed. Fall back to sync.
-				serverActive = false
+				// Lock cleared, no running server
+				// via TCP. Re-check: a live state
+				// file (transient probe failure)
+				// still means the server is active.
+				serverActive = server.IsServerActive(
+					appCfg.DataDir,
+				)
 			}
 			// Lock still live after timeout: server is
 			// active but slow. Read DB as-is.

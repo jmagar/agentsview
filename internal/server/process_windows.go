@@ -4,14 +4,15 @@ package server
 
 import "syscall"
 
-const (
-	processQueryLimitedInformation = 0x1000
-	stillActive                    = 259
-)
+const processQueryLimitedInformation = 0x1000
 
 // processAlive reports whether a process with the given PID
 // exists. On Windows, signal-0 is not supported, so we open
-// a process handle and check whether it has exited.
+// a process handle and use WaitForSingleObject with a zero
+// timeout. WAIT_TIMEOUT means the process is still running.
+// This avoids the GetExitCodeProcess pitfall where a process
+// that exits with code 259 (STILL_ACTIVE) is falsely
+// detected as alive.
 func processAlive(pid int) bool {
 	h, err := syscall.OpenProcess(
 		processQueryLimitedInformation, false, uint32(pid),
@@ -21,11 +22,6 @@ func processAlive(pid int) bool {
 	}
 	defer syscall.CloseHandle(h)
 
-	var exitCode uint32
-	err = syscall.GetExitCodeProcess(h, &exitCode)
-	if err != nil {
-		return false
-	}
-	// STILL_ACTIVE (259) means the process has not exited.
-	return exitCode == stillActive
+	event, _ := syscall.WaitForSingleObject(h, 0)
+	return event == syscall.WAIT_TIMEOUT
 }
