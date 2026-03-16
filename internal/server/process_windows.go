@@ -6,6 +6,11 @@ import "syscall"
 
 const processQueryLimitedInformation = 0x1000
 
+// processAliveAccess combines SYNCHRONIZE (required by
+// WaitForSingleObject) with limited query rights.
+const processAliveAccess = syscall.SYNCHRONIZE |
+	processQueryLimitedInformation
+
 // processAlive reports whether a process with the given PID
 // exists. On Windows, signal-0 is not supported, so we open
 // a process handle and use WaitForSingleObject with a zero
@@ -15,7 +20,7 @@ const processQueryLimitedInformation = 0x1000
 // detected as alive.
 func processAlive(pid int) bool {
 	h, err := syscall.OpenProcess(
-		processQueryLimitedInformation, false, uint32(pid),
+		processAliveAccess, false, uint32(pid),
 	)
 	if err != nil {
 		return false
