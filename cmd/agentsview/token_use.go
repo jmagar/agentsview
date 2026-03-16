@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/wesm/agentsview/internal/config"
 	"github.com/wesm/agentsview/internal/db"
@@ -26,6 +27,11 @@ type tokenUseOutput struct {
 	PeakContextTokens int    `json:"peak_context_tokens"`
 	ServerRunning     bool   `json:"server_running"`
 }
+
+// startupWaitTimeout is how long token-use will wait for a
+// starting server to become ready before falling back to
+// on-demand sync.
+const startupWaitTimeout = 30 * time.Second
 
 func runTokenUse(args []string) {
 	if len(args) != 1 {
@@ -50,10 +56,23 @@ func tokenUse(sessionID string) error {
 		return fmt.Errorf("creating data dir: %w", err)
 	}
 
-	serverRunning := server.FindRunningServer(
-		appCfg.DataDir,
-	) != nil
-	serverStarting := server.IsServerStarting(appCfg.DataDir)
+	serverActive := server.IsServerActive(appCfg.DataDir)
+
+	// If a server is starting up (syncing, binding port),
+	// wait for it to finish so we read fresh data rather
+	// than returning stale results or "session not found".
+	if serverActive &&
+		server.FindRunningServer(appCfg.DataDir) == nil {
+		fmt.Fprintf(os.Stderr,
+			"server is starting up, waiting...\n")
+		if !server.WaitForStartup(
+			appCfg.DataDir, startupWaitTimeout,
+		) {
+			// Startup didn't complete — fall through to
+			// on-demand sync below.
+			serverActive = false
+		}
+	}
 
 	database, err := db.Open(appCfg.DBPath)
 	if err != nil {
@@ -66,15 +85,16 @@ func tokenUse(sessionID string) error {
 			appCfg.CursorSecret,
 		)
 		if decErr != nil {
-			return fmt.Errorf("invalid cursor secret: %w", decErr)
+			return fmt.Errorf(
+				"invalid cursor secret: %w", decErr,
+			)
 		}
 		database.SetCursorSecret(secret)
 	}
 
-	// If no server is keeping the DB in sync and no server is
-	// starting up (which would be running its own initial
-	// sync), do an on-demand sync for this session.
-	if !serverRunning && !serverStarting {
+	// If no server is managing the DB, do an on-demand sync
+	// for this session so the data is fresh.
+	if !serverActive {
 		engine := sync.NewEngine(database, sync.EngineConfig{
 			AgentDirs:               appCfg.AgentDirs,
 			Machine:                 "local",
@@ -113,7 +133,7 @@ func tokenUse(sessionID string) error {
 		Project:           sess.Project,
 		TotalOutputTokens: sess.TotalOutputTokens,
 		PeakContextTokens: sess.PeakContextTokens,
-		ServerRunning:     serverRunning,
+		ServerRunning:     serverActive,
 	}
 
 	enc := json.NewEncoder(os.Stdout)

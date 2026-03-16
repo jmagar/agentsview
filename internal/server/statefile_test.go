@@ -126,7 +126,6 @@ func TestFindRunningServer_LiveProcess(t *testing.T) {
 
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	// Write a state file for our own PID and the listener port.
 	sf := StateFile{
 		PID:       os.Getpid(),
 		Port:      port,
@@ -135,7 +134,9 @@ func TestFindRunningServer_LiveProcess(t *testing.T) {
 		StartedAt: "2025-01-01T00:00:00Z",
 	}
 	data, _ := json.Marshal(sf)
-	path := filepath.Join(dir, fmt.Sprintf("server.%d.json", port))
+	path := filepath.Join(
+		dir, fmt.Sprintf("server.%d.json", port),
+	)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write state file: %v", err)
 	}
@@ -148,14 +149,15 @@ func TestFindRunningServer_LiveProcess(t *testing.T) {
 		t.Errorf("port = %d, want %d", result.Port, port)
 	}
 	if result.PID != os.Getpid() {
-		t.Errorf("pid = %d, want %d", result.PID, os.Getpid())
+		t.Errorf(
+			"pid = %d, want %d", result.PID, os.Getpid(),
+		)
 	}
 }
 
 func TestFindRunningServer_BindAll(t *testing.T) {
 	dir := t.TempDir()
 
-	// Listener on 0.0.0.0 — probe should normalize to 127.0.0.1.
 	ln, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -172,19 +174,189 @@ func TestFindRunningServer_BindAll(t *testing.T) {
 		StartedAt: "2025-01-01T00:00:00Z",
 	}
 	data, _ := json.Marshal(sf)
-	path := filepath.Join(dir, fmt.Sprintf("server.%d.json", port))
+	path := filepath.Join(
+		dir, fmt.Sprintf("server.%d.json", port),
+	)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write state file: %v", err)
 	}
 
 	result := FindRunningServer(dir)
 	if result == nil {
-		t.Fatal("expected running server for 0.0.0.0 host, got nil")
+		t.Fatal(
+			"expected running server for 0.0.0.0 host, got nil",
+		)
 	}
 	if result.Port != port {
 		t.Errorf("port = %d, want %d", result.Port, port)
 	}
 }
+
+// TestIsServerActive_LivePIDNoPort verifies that IsServerActive
+// returns true when a state file has a live PID but no listening
+// port (e.g., transient TCP probe failure or server under load).
+func TestIsServerActive_LivePIDNoPort(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a state file with our own PID but a port that
+	// nothing is listening on.
+	sf := StateFile{
+		PID:       os.Getpid(),
+		Port:      59999,
+		Host:      "127.0.0.1",
+		Version:   "1.0.0",
+		StartedAt: "2025-01-01T00:00:00Z",
+	}
+	data, _ := json.Marshal(sf)
+	path := filepath.Join(dir, "server.59999.json")
+	os.WriteFile(path, data, 0o644)
+
+	// FindRunningServer should return nil (no TCP).
+	if FindRunningServer(dir) != nil {
+		t.Error("expected FindRunningServer nil (no listener)")
+	}
+
+	// But IsServerActive should return true (live PID).
+	if !IsServerActive(dir) {
+		t.Error("expected IsServerActive true for live PID")
+	}
+
+	// State file should NOT be deleted.
+	if _, err := os.Stat(path); err != nil {
+		t.Error("state file was deleted despite live PID")
+	}
+}
+
+// TestIsServerActive_StartupLock verifies that IsServerActive
+// returns true when only the startup lock exists.
+func TestIsServerActive_StartupLock(t *testing.T) {
+	dir := t.TempDir()
+
+	if IsServerActive(dir) {
+		t.Fatal("expected false with no files")
+	}
+
+	WriteStartupLock(dir)
+	if !IsServerActive(dir) {
+		t.Fatal("expected true with startup lock")
+	}
+
+	RemoveStartupLock(dir)
+	if IsServerActive(dir) {
+		t.Fatal("expected false after lock removed")
+	}
+}
+
+func TestStartupLock_OwnProcess(t *testing.T) {
+	dir := t.TempDir()
+
+	if isServerStarting(dir) {
+		t.Fatal("expected false before lock written")
+	}
+
+	WriteStartupLock(dir)
+	if !isServerStarting(dir) {
+		t.Fatal("expected true after lock written")
+	}
+
+	RemoveStartupLock(dir)
+	if isServerStarting(dir) {
+		t.Fatal("expected false after lock removed")
+	}
+}
+
+func TestStartupLock_StalePID(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a lock file with a PID that doesn't exist.
+	path := filepath.Join(dir, startupLockName)
+	os.WriteFile(path, []byte("999999999"), 0o644)
+
+	if isServerStarting(dir) {
+		t.Fatal("expected false for stale PID")
+	}
+
+	// Stale lock should be cleaned up.
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("stale startup lock not cleaned up")
+	}
+}
+
+// TestStartupLock_MalformedContent verifies that a malformed
+// lock file (e.g., partial write) is not deleted, since it
+// could be a concurrent WriteStartupLock in progress.
+func TestStartupLock_MalformedContent(t *testing.T) {
+	dir := t.TempDir()
+
+	path := filepath.Join(dir, startupLockName)
+	os.WriteFile(path, []byte("not-a-pid"), 0o644)
+
+	if isServerStarting(dir) {
+		t.Fatal("expected false for malformed content")
+	}
+
+	// File should NOT be deleted.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Error("malformed lock file was deleted")
+	}
+}
+
+// TestStartupLock_AtomicWrite verifies the lock file is written
+// with content intact (no empty/partial file observable).
+func TestStartupLock_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+
+	WriteStartupLock(dir)
+
+	path := filepath.Join(dir, startupLockName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading lock: %v", err)
+	}
+
+	want := fmt.Sprintf("%d", os.Getpid())
+	if string(data) != want {
+		t.Errorf("lock content = %q, want %q", data, want)
+	}
+
+	// No temp file should remain.
+	tmpPath := path + ".tmp"
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Error("temp file was not cleaned up")
+	}
+}
+
+func TestWaitForStartup_AlreadyRunning(t *testing.T) {
+	dir := t.TempDir()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	WriteStateFile(dir, "127.0.0.1", port, "1.0.0")
+
+	// Should return immediately since server is running.
+	if !WaitForStartup(dir, 100*millisecondsForTest) {
+		t.Error("expected true, server is running")
+	}
+}
+
+func TestWaitForStartup_LockClearsNoServer(t *testing.T) {
+	dir := t.TempDir()
+
+	// No lock, no server — should return false immediately.
+	if WaitForStartup(dir, 100*millisecondsForTest) {
+		t.Error(
+			"expected false, no lock and no server",
+		)
+	}
+}
+
+// millisecondsForTest is a scaling factor for test timeouts.
+const millisecondsForTest = 1_000_000 // 1ms in ns
 
 func TestProbeHostForDial(t *testing.T) {
 	tests := []struct {
@@ -205,41 +377,6 @@ func TestProbeHostForDial(t *testing.T) {
 				tt.host, got, tt.want,
 			)
 		}
-	}
-}
-
-func TestStartupLock_OwnProcess(t *testing.T) {
-	dir := t.TempDir()
-
-	if IsServerStarting(dir) {
-		t.Fatal("expected false before lock written")
-	}
-
-	WriteStartupLock(dir)
-	if !IsServerStarting(dir) {
-		t.Fatal("expected true after lock written")
-	}
-
-	RemoveStartupLock(dir)
-	if IsServerStarting(dir) {
-		t.Fatal("expected false after lock removed")
-	}
-}
-
-func TestStartupLock_StalePID(t *testing.T) {
-	dir := t.TempDir()
-
-	// Write a lock file with a PID that doesn't exist.
-	path := filepath.Join(dir, startupLockName)
-	os.WriteFile(path, []byte("999999999"), 0o644)
-
-	if IsServerStarting(dir) {
-		t.Fatal("expected false for stale PID")
-	}
-
-	// Stale lock should be cleaned up.
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("stale startup lock not cleaned up")
 	}
 }
 

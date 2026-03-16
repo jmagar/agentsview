@@ -109,16 +109,57 @@ func FindRunningServer(dataDir string) *StateFile {
 	return nil
 }
 
+// hasLiveStateFile reports whether any server state file in
+// dataDir has a live PID, regardless of port connectivity.
+// Unlike FindRunningServer, this returns true even during
+// transient TCP probe failures.
+func hasLiveStateFile(dataDir string) bool {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "server.") ||
+			!strings.HasSuffix(name, ".json") {
+			continue
+		}
+		data, err := os.ReadFile(
+			filepath.Join(dataDir, name),
+		)
+		if err != nil {
+			continue
+		}
+		var sf StateFile
+		if err := json.Unmarshal(data, &sf); err != nil {
+			continue
+		}
+		if processAlive(sf.PID) {
+			return true
+		}
+	}
+	return false
+}
+
 const startupLockName = "server.starting"
 
 // WriteStartupLock creates a lock file indicating a server is
-// starting up (syncing, binding port). CLI commands check this
-// to avoid competing syncs during the startup window.
+// starting up (syncing, binding port). Written via a temp file
+// and atomic rename to prevent concurrent readers from seeing
+// a partial/empty file.
 func WriteStartupLock(dataDir string) {
-	path := filepath.Join(dataDir, startupLockName)
-	_ = os.WriteFile(path, fmt.Appendf(
-		nil, "%d", os.Getpid(),
-	), 0o644)
+	target := filepath.Join(dataDir, startupLockName)
+	tmp := target + ".tmp"
+	data := fmt.Appendf(nil, "%d", os.Getpid())
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		// Best-effort: fall back to direct write.
+		_ = os.WriteFile(target, data, 0o644)
+		return
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.WriteFile(target, data, 0o644)
+		os.Remove(tmp)
+	}
 }
 
 // RemoveStartupLock removes the startup lock file.
@@ -126,10 +167,10 @@ func RemoveStartupLock(dataDir string) {
 	os.Remove(filepath.Join(dataDir, startupLockName))
 }
 
-// IsServerStarting reports whether a server is currently
+// isServerStarting reports whether a server is currently
 // starting up. Returns true only if the lock file exists and
 // the recorded PID is still alive.
-func IsServerStarting(dataDir string) bool {
+func isServerStarting(dataDir string) bool {
 	path := filepath.Join(dataDir, startupLockName)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -137,7 +178,8 @@ func IsServerStarting(dataDir string) bool {
 	}
 	var pid int
 	if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil {
-		os.Remove(path)
+		// Don't delete on parse failure — could be a
+		// partial write from a concurrent WriteStartupLock.
 		return false
 	}
 	if !processAlive(pid) {
@@ -145,6 +187,39 @@ func IsServerStarting(dataDir string) bool {
 		return false
 	}
 	return true
+}
+
+// IsServerActive reports whether a server process is managing
+// the database in dataDir. Returns true if:
+//   - a state file with a live PID exists (even if the port
+//     probe fails due to a transient issue), or
+//   - a startup lock with a live PID exists (server is still
+//     syncing / binding its port).
+//
+// This is the check CLI commands should use to decide whether
+// to skip on-demand sync.
+func IsServerActive(dataDir string) bool {
+	return hasLiveStateFile(dataDir) || isServerStarting(dataDir)
+}
+
+// WaitForStartup polls until the startup lock clears or a
+// running server is detected, up to the given timeout.
+// Returns true if a server became ready, false on timeout.
+func WaitForStartup(dataDir string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if FindRunningServer(dataDir) != nil {
+			return true
+		}
+		if !isServerStarting(dataDir) {
+			// Lock gone but no running server — startup
+			// may have failed. Caller should try on-demand
+			// sync.
+			return false
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return false
 }
 
 // probeHostForDial converts a bind-all address to a loopback
