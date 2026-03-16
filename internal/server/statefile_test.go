@@ -88,13 +88,10 @@ func TestWriteStateFile_UsesProcessStartTime(t *testing.T) {
 	}
 
 	// StartedAt should match the process start time, not
-	// time.Now(). We verify two things:
-	// 1. StartedAt is close to procStart (within 1s for
-	//    RFC3339 truncation).
-	// 2. StartedAt is closer to procStart than to
-	//    time.Now(). This catches a time.Now()
-	//    implementation on fast runners where the 1s
-	//    tolerance alone might not distinguish.
+	// time.Now(). With RFC3339Nano precision there is no
+	// truncation, so we can use a tight tolerance (1ms
+	// for platform rounding). We also verify StartedAt is
+	// closer to procStart than to time.Now().
 	now := time.Now()
 	diffFromStart := started.Sub(procStart)
 	if diffFromStart < 0 {
@@ -104,7 +101,7 @@ func TestWriteStateFile_UsesProcessStartTime(t *testing.T) {
 	if diffFromNow < 0 {
 		diffFromNow = -diffFromNow
 	}
-	if diffFromStart > time.Second {
+	if diffFromStart > time.Millisecond {
 		t.Errorf(
 			"StartedAt = %v, want ≈ process start %v "+
 				"(diff %v)",
@@ -276,7 +273,7 @@ func TestFindRunningServer_BindAll(t *testing.T) {
 // we fall back to a time that is after boot.
 func recentStartedAt() string {
 	if st, err := processStartTime(os.Getpid()); err == nil {
-		return st.UTC().Format(time.RFC3339)
+		return st.UTC().Format(time.RFC3339Nano)
 	}
 	started := time.Now().Add(-1 * time.Hour)
 	if bt, err := systemBootTime(); err == nil {
@@ -284,7 +281,7 @@ func recentStartedAt() string {
 			started = bt.Add(time.Second)
 		}
 	}
-	return started.UTC().Format(time.RFC3339)
+	return started.UTC().Format(time.RFC3339Nano)
 }
 
 // TestIsServerActive_LivePIDNoPort verifies that IsServerActive
@@ -402,7 +399,7 @@ func TestIsServerActive_PreBootStateFile(t *testing.T) {
 		Port:      59996,
 		Host:      "127.0.0.1",
 		Version:   "1.0.0",
-		StartedAt: preBootTime.UTC().Format(time.RFC3339),
+		StartedAt: preBootTime.UTC().Format(time.RFC3339Nano),
 	}
 	data, _ := json.Marshal(sf)
 	path := filepath.Join(dir, "server.59996.json")
@@ -641,7 +638,7 @@ func TestIsServerActive_SameBootPIDReuse(t *testing.T) {
 		Host:    "127.0.0.1",
 		Version: "1.0.0",
 		StartedAt: fakeStarted.UTC().
-			Format(time.RFC3339),
+			Format(time.RFC3339Nano),
 	}
 	data, _ := json.Marshal(sf)
 	path := filepath.Join(dir, "server.59995.json")

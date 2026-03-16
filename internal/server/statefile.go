@@ -42,7 +42,7 @@ func WriteStateFile(
 		Port:      port,
 		Host:      host,
 		Version:   version,
-		StartedAt: started.UTC().Format(time.RFC3339),
+		StartedAt: started.UTC().Format(time.RFC3339Nano),
 	}
 	data, err := json.Marshal(sf)
 	if err != nil {
@@ -160,7 +160,7 @@ func hasLiveStateFile(dataDir string) bool {
 		}
 
 		started, parseErr := time.Parse(
-			time.RFC3339, sf.StartedAt,
+			time.RFC3339Nano, sf.StartedAt,
 		)
 
 		// Layer 1: boot time check.
