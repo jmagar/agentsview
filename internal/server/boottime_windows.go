@@ -3,17 +3,24 @@
 package server
 
 import (
-	"syscall"
+	"fmt"
 	"time"
 )
 
-// systemBootTime returns the system boot time on Windows
-// using GetTickCount64. Since GetTickCount64 returns
-// milliseconds since boot, we subtract from now.
+// systemBootTime is intentionally not implemented on Windows.
+// GetTickCount64 (the usual source) excludes time spent in
+// sleep/hibernation, so the calculated boot time drifts
+// forward after each suspend cycle. This would cause
+// hasLiveStateFile to incorrectly delete state files for
+// long-running servers that survived a sleep.
+//
+// On Windows, processStartTime (via GetProcessTimes) provides
+// a reliable absolute creation timestamp, so the boot-time
+// layer is unnecessary.
 func systemBootTime() (time.Time, error) {
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	proc := kernel32.NewProc("GetTickCount64")
-	ms, _, _ := proc.Call()
-	uptime := time.Duration(ms) * time.Millisecond
-	return time.Now().Add(-uptime), nil
+	return time.Time{}, fmt.Errorf(
+		"boot time not available on Windows " +
+			"(GetTickCount64 is sleep-aware); " +
+			"use processStartTime instead",
+	)
 }

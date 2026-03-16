@@ -88,16 +88,36 @@ func TestWriteStateFile_UsesProcessStartTime(t *testing.T) {
 	}
 
 	// StartedAt should match the process start time, not
-	// time.Now(). Allow 1s for RFC3339 truncation.
-	diff := started.Sub(procStart)
-	if diff < 0 {
-		diff = -diff
+	// time.Now(). We verify two things:
+	// 1. StartedAt is close to procStart (within 1s for
+	//    RFC3339 truncation).
+	// 2. StartedAt is closer to procStart than to
+	//    time.Now(). This catches a time.Now()
+	//    implementation on fast runners where the 1s
+	//    tolerance alone might not distinguish.
+	now := time.Now()
+	diffFromStart := started.Sub(procStart)
+	if diffFromStart < 0 {
+		diffFromStart = -diffFromStart
 	}
-	if diff > time.Second {
+	diffFromNow := started.Sub(now)
+	if diffFromNow < 0 {
+		diffFromNow = -diffFromNow
+	}
+	if diffFromStart > time.Second {
 		t.Errorf(
 			"StartedAt = %v, want ≈ process start %v "+
 				"(diff %v)",
-			started, procStart, diff,
+			started, procStart, diffFromStart,
+		)
+	}
+	if diffFromNow < diffFromStart {
+		t.Errorf(
+			"StartedAt %v is closer to Now %v than "+
+				"to process start %v; likely using "+
+				"time.Now() instead of process "+
+				"start time",
+			started, now, procStart,
 		)
 	}
 
