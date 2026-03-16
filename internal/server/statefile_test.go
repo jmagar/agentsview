@@ -418,6 +418,33 @@ func TestIsServerActive_PreBootStateFile(t *testing.T) {
 	}
 }
 
+// TestIsServerActive_DeadPIDStateFile verifies that a state
+// file left behind after a server crash (dead PID) is cleaned
+// up by hasLiveStateFile so IsServerActive returns false.
+func TestIsServerActive_DeadPIDStateFile(t *testing.T) {
+	dir := t.TempDir()
+
+	sf := StateFile{
+		PID:       999999999,
+		Port:      59994,
+		Host:      "127.0.0.1",
+		Version:   "1.0.0",
+		StartedAt: recentStartedAt(),
+	}
+	data, _ := json.Marshal(sf)
+	path := filepath.Join(dir, "server.59994.json")
+	os.WriteFile(path, data, 0o644)
+
+	if IsServerActive(dir) {
+		t.Error("expected false for dead PID state file")
+	}
+
+	// Dead-PID state file should be cleaned up.
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("dead-PID state file not cleaned up")
+	}
+}
+
 // TestIsServerActive_StartupLock verifies that IsServerActive
 // returns true when only the startup lock exists.
 func TestIsServerActive_StartupLock(t *testing.T) {

@@ -156,6 +156,7 @@ func hasLiveStateFile(dataDir string) bool {
 			continue
 		}
 		if !processAlive(sf.PID) {
+			os.Remove(path)
 			continue
 		}
 
