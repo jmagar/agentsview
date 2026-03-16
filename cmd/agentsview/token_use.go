@@ -28,24 +28,26 @@ type tokenUseOutput struct {
 }
 
 func runTokenUse(args []string) {
-	if len(args) == 0 {
+	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
 			"usage: agentsview token-use <session-id>")
 		os.Exit(1)
 	}
-	sessionID := args[0]
 
+	if err := tokenUse(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func tokenUse(sessionID string) error {
 	appCfg, err := config.LoadMinimal()
 	if err != nil {
-		fmt.Fprintf(os.Stderr,
-			"error: loading config: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("loading config: %w", err)
 	}
 
 	if err := os.MkdirAll(appCfg.DataDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr,
-			"error: creating data dir: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("creating data dir: %w", err)
 	}
 
 	serverRunning := server.FindRunningServer(
@@ -54,9 +56,7 @@ func runTokenUse(args []string) {
 
 	database, err := db.Open(appCfg.DBPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr,
-			"error: opening database: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
@@ -65,9 +65,7 @@ func runTokenUse(args []string) {
 			appCfg.CursorSecret,
 		)
 		if decErr != nil {
-			fmt.Fprintf(os.Stderr,
-				"error: invalid cursor secret: %v\n", decErr)
-			os.Exit(1)
+			return fmt.Errorf("invalid cursor secret: %w", decErr)
 		}
 		database.SetCursorSecret(secret)
 	}
@@ -76,8 +74,9 @@ func runTokenUse(args []string) {
 	// sync for this session so the data is fresh.
 	if !serverRunning {
 		engine := sync.NewEngine(database, sync.EngineConfig{
-			AgentDirs: appCfg.AgentDirs,
-			Machine:   "local",
+			AgentDirs:               appCfg.AgentDirs,
+			Machine:                 "local",
+			BlockedResultCategories: appCfg.ResultContentBlockedCategories,
 		})
 		if syncErr := engine.SyncSingleSession(
 			sessionID,
@@ -93,14 +92,10 @@ func runTokenUse(args []string) {
 		context.Background(), sessionID,
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr,
-			"error: querying session: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("querying session: %w", err)
 	}
 	if sess == nil {
-		fmt.Fprintf(os.Stderr,
-			"error: session not found: %s\n", sessionID)
-		os.Exit(1)
+		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
 	agent := sess.Agent
@@ -121,9 +116,5 @@ func runTokenUse(args []string) {
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(out); err != nil {
-		fmt.Fprintf(os.Stderr,
-			"error: encoding output: %v\n", err)
-		os.Exit(1)
-	}
+	return enc.Encode(out)
 }

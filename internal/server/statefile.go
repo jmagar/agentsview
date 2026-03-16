@@ -88,7 +88,10 @@ func FindRunningServer(dataDir string) *StateFile {
 			continue
 		}
 
-		// Verify the port is actually listening.
+		// Verify the port is actually listening. If the
+		// process is alive but the dial fails (transient
+		// timeout, GC pause, full backlog), keep the state
+		// file — only a dead PID justifies removal.
 		probeHost := probeHostForDial(sf.Host)
 		conn, err := net.DialTimeout(
 			"tcp",
@@ -96,7 +99,6 @@ func FindRunningServer(dataDir string) *StateFile {
 			500*time.Millisecond,
 		)
 		if err != nil {
-			os.Remove(path)
 			continue
 		}
 		conn.Close()
