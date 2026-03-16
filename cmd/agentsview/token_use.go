@@ -83,7 +83,13 @@ func tokenUse(sessionID string) error {
 						startupWaitTimeout,
 					)
 				}
-				serverActive = false
+				// Lock cleared but server didn't become
+				// ready. Re-check if a server is still
+				// active (covers transient TCP failure
+				// after startup finished).
+				serverActive = server.IsServerActive(
+					appCfg.DataDir,
+				)
 			}
 		} else if !server.IsServerActive(appCfg.DataDir) {
 			// The server that was alive at the first check

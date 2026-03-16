@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestWriteAndRemoveStateFile(t *testing.T) {
@@ -192,6 +193,14 @@ func TestFindRunningServer_BindAll(t *testing.T) {
 	}
 }
 
+// recentStartedAt returns a StartedAt timestamp from 1 hour
+// ago. This is always after the last boot, so the boot-time
+// check in hasLiveStateFile passes.
+func recentStartedAt() string {
+	return time.Now().Add(-1 * time.Hour).UTC().
+		Format(time.RFC3339)
+}
+
 // TestIsServerActive_LivePIDNoPort verifies that IsServerActive
 // returns true when a state file has a live PID but no listening
 // port (e.g., transient TCP probe failure or server under load).
@@ -203,7 +212,7 @@ func TestIsServerActive_LivePIDNoPort(t *testing.T) {
 		Port:      59999,
 		Host:      "127.0.0.1",
 		Version:   "1.0.0",
-		StartedAt: "2025-01-01T00:00:00Z",
+		StartedAt: recentStartedAt(),
 	}
 	data, _ := json.Marshal(sf)
 	path := filepath.Join(dir, "server.59999.json")
@@ -241,7 +250,7 @@ func TestIsServerActive_LivePIDNoPort_NoStartupLock(
 		Port:      59998,
 		Host:      "127.0.0.1",
 		Version:   "1.0.0",
-		StartedAt: "2025-01-01T00:00:00Z",
+		StartedAt: recentStartedAt(),
 	}
 	data, _ := json.Marshal(sf)
 	os.WriteFile(
@@ -262,18 +271,26 @@ func TestIsServerActive_LivePIDNoPort_NoStartupLock(
 // TestIsServerActive_LongRunningServer verifies that a
 // server running for weeks is still detected as active even
 // when the TCP probe transiently fails. The state file must
-// not be deleted regardless of age.
+// not be deleted regardless of age, as long as it post-dates
+// the last boot.
 func TestIsServerActive_LongRunningServer(t *testing.T) {
 	dir := t.TempDir()
 
-	// State file from 30 days ago — server has been running
-	// for a month.
+	// Use a StartedAt that's 30 days ago but after boot.
+	// (If the machine has been up less than 30 days, use a
+	// time just after boot.)
+	bootTime, btErr := systemBootTime()
+	startedAt := time.Now().Add(-30 * 24 * time.Hour)
+	if btErr == nil && startedAt.Before(bootTime) {
+		startedAt = bootTime.Add(time.Second)
+	}
+
 	sf := StateFile{
 		PID:       os.Getpid(),
 		Port:      59997,
 		Host:      "127.0.0.1",
 		Version:   "1.0.0",
-		StartedAt: "2024-01-01T00:00:00Z",
+		StartedAt: startedAt.UTC().Format(time.RFC3339),
 	}
 	data, _ := json.Marshal(sf)
 	path := filepath.Join(dir, "server.59997.json")
@@ -286,6 +303,44 @@ func TestIsServerActive_LongRunningServer(t *testing.T) {
 	// State file must NOT be deleted.
 	if _, err := os.Stat(path); err != nil {
 		t.Error("state file was deleted for long-running server")
+	}
+}
+
+// TestIsServerActive_PreBootStateFile verifies that a state
+// file from before the last system boot is treated as stale
+// even if the PID is alive (PID reuse after reboot).
+func TestIsServerActive_PreBootStateFile(t *testing.T) {
+	dir := t.TempDir()
+
+	bootTime, err := systemBootTime()
+	if err != nil {
+		t.Skipf("boot time not available: %v", err)
+	}
+
+	// State file from well before boot — simulates a crash
+	// followed by a reboot where the PID was reused.
+	preBootTime := bootTime.Add(-24 * time.Hour)
+	sf := StateFile{
+		PID:       os.Getpid(),
+		Port:      59996,
+		Host:      "127.0.0.1",
+		Version:   "1.0.0",
+		StartedAt: preBootTime.UTC().Format(time.RFC3339),
+	}
+	data, _ := json.Marshal(sf)
+	path := filepath.Join(dir, "server.59996.json")
+	os.WriteFile(path, data, 0o644)
+
+	if IsServerActive(dir) {
+		t.Error(
+			"expected false for pre-boot state file " +
+				"(PID reuse after reboot)",
+		)
+	}
+
+	// Stale file should be cleaned up.
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("pre-boot state file was not cleaned up")
 	}
 }
 

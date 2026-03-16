@@ -112,13 +112,17 @@ func FindRunningServer(dataDir string) *StateFile {
 // hasLiveStateFile reports whether any server state file in
 // dataDir has a live PID, regardless of port connectivity.
 // Unlike FindRunningServer, this returns true even during
-// transient TCP probe failures. A live PID is trusted
-// unconditionally — servers can legitimately run for weeks,
-// and PID reuse on modern systems (large PID spaces) is rare
-// enough that a false positive (skipping one on-demand sync)
-// is preferable to deleting a long-running server's state
-// file.
+// transient TCP probe failures.
+//
+// To mitigate PID reuse after a reboot (where the OS can
+// assign the same PID to an unrelated process), state files
+// whose StartedAt predates the system boot time are treated
+// as stale and removed. Between reboots, PID reuse requires
+// cycling through the full PID space which is large on modern
+// systems.
 func hasLiveStateFile(dataDir string) bool {
+	bootTime, _ := systemBootTime()
+
 	entries, err := os.ReadDir(dataDir)
 	if err != nil {
 		return false
@@ -129,9 +133,8 @@ func hasLiveStateFile(dataDir string) bool {
 			!strings.HasSuffix(name, ".json") {
 			continue
 		}
-		data, err := os.ReadFile(
-			filepath.Join(dataDir, name),
-		)
+		path := filepath.Join(dataDir, name)
+		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -139,9 +142,21 @@ func hasLiveStateFile(dataDir string) bool {
 		if err := json.Unmarshal(data, &sf); err != nil {
 			continue
 		}
-		if processAlive(sf.PID) {
-			return true
+		if !processAlive(sf.PID) {
+			continue
 		}
+		// If the state file predates the last boot, the PID
+		// belongs to a different process. Clean up.
+		if !bootTime.IsZero() && sf.StartedAt != "" {
+			started, err := time.Parse(
+				time.RFC3339, sf.StartedAt,
+			)
+			if err == nil && started.Before(bootTime) {
+				os.Remove(path)
+				continue
+			}
+		}
+		return true
 	}
 	return false
 }
