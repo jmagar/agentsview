@@ -119,7 +119,12 @@ func tokenUse(sessionID string) error {
 	}
 
 	// If no server is managing the DB, do an on-demand sync
-	// for this session so the data is fresh.
+	// for this session so the data is fresh. Re-check right
+	// before syncing to close the TOCTOU window where a
+	// server could have started since our initial probe.
+	if !serverActive {
+		serverActive = server.IsServerActive(appCfg.DataDir)
+	}
 	if !serverActive {
 		engine := sync.NewEngine(database, sync.EngineConfig{
 			AgentDirs:               appCfg.AgentDirs,
