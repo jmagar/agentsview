@@ -27,16 +27,22 @@ func stateFileName(port int) string {
 }
 
 // WriteStateFile writes a state file to dataDir for the
-// running server. Returns the path written.
+// running server. Returns the path written. StartedAt is
+// set to the actual process creation time so it passes
+// processStartTime validation even when startup is slow.
 func WriteStateFile(
 	dataDir string, host string, port int, version string,
 ) (string, error) {
+	started := time.Now()
+	if ps, err := processStartTime(os.Getpid()); err == nil {
+		started = ps
+	}
 	sf := StateFile{
 		PID:       os.Getpid(),
 		Port:      port,
 		Host:      host,
 		Version:   version,
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		StartedAt: started.UTC().Format(time.RFC3339),
 	}
 	data, err := json.Marshal(sf)
 	if err != nil {

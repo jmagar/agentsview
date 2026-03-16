@@ -54,6 +54,62 @@ func TestWriteAndRemoveStateFile(t *testing.T) {
 	}
 }
 
+// TestWriteStateFile_UsesProcessStartTime verifies that
+// WriteStateFile records the actual process creation time,
+// not the wall clock at write time. This ensures that a
+// slow startup (sync > 120s) doesn't cause the state file
+// to be misclassified as stale by processStartTime checks.
+func TestWriteStateFile_UsesProcessStartTime(t *testing.T) {
+	procStart, err := processStartTime(os.Getpid())
+	if err != nil {
+		t.Skipf("processStartTime not available: %v", err)
+	}
+
+	dir := t.TempDir()
+	path, err := WriteStateFile(
+		dir, "127.0.0.1", 7777, "1.0.0",
+	)
+	if err != nil {
+		t.Fatalf("WriteStateFile: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading state file: %v", err)
+	}
+	var sf StateFile
+	if err := json.Unmarshal(data, &sf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	started, err := time.Parse(time.RFC3339, sf.StartedAt)
+	if err != nil {
+		t.Fatalf("parsing StartedAt: %v", err)
+	}
+
+	// StartedAt should match the process start time, not
+	// time.Now(). Allow 1s for RFC3339 truncation.
+	diff := started.Sub(procStart)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > time.Second {
+		t.Errorf(
+			"StartedAt = %v, want ≈ process start %v "+
+				"(diff %v)",
+			started, procStart, diff,
+		)
+	}
+
+	// The state file must pass hasLiveStateFile validation.
+	if !IsServerActive(dir) {
+		t.Error(
+			"state file written by WriteStateFile " +
+				"failed IsServerActive",
+		)
+	}
+}
+
 func TestFindRunningServer_NoFiles(t *testing.T) {
 	dir := t.TempDir()
 	if sf := FindRunningServer(dir); sf != nil {
