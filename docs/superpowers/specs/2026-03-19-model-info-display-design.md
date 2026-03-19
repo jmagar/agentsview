@@ -87,6 +87,11 @@ In `SubagentInline.svelte`, derive the child session's main model from
 its messages and display it in the toggle header. Full model string, no
 shortening.
 
+Subagent messages are only loaded when the user expands the subagent
+inline. The model badge appears after expansion, once messages are
+available to compute from. This is the natural behavior — no extra API
+calls or schema changes needed.
+
 ### Removed from Original Branch
 
 The original branch included several features that are dropped in this
