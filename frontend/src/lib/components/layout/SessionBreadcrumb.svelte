@@ -59,7 +59,11 @@
 
   let sessionContextTokens = $derived(session?.peak_context_tokens ?? 0);
 
-  let mainModel = $derived(computeMainModel(messagesStore.messages));
+  let mainModel = $derived(
+    messagesStore.sessionId === session?.id && !messagesStore.hasOlder
+      ? computeMainModel(messagesStore.messages)
+      : "",
+  );
 
   function sessionDisplayId(id: string): string {
     const idx = id.indexOf(":");

@@ -63,8 +63,8 @@ func (b *copilotSessionBuilder) processLine(line string) {
 	case copilotEventAssistantReason:
 		b.handleAssistantReasoning()
 	case copilotEventModelChange:
-		if m := data.Get("newModel").Str; m != "" {
-			b.currentModel = m
+		if v := data.Get("newModel"); v.Exists() {
+			b.currentModel = v.Str
 		}
 	}
 }

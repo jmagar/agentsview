@@ -355,6 +355,25 @@ func TestParseCopilotSession_ModelMidSessionChange(t *testing.T) {
 	assertEqual(t, "claude-haiku-4.5", msgs[3].Model, "msgs[3].Model")
 }
 
+func TestParseCopilotSession_ModelReset(t *testing.T) {
+	// An empty newModel clears the active model so
+	// subsequent assistant messages have no model.
+	path := writeCopilotJSONL(t,
+		`{"type":"session.start","data":{"sessionId":"reset-test"},"timestamp":"2025-01-15T10:00:00Z"}`,
+		`{"type":"session.model_change","data":{"newModel":"claude-sonnet-4.6"},"timestamp":"2025-01-15T10:00:01Z"}`,
+		`{"type":"user.message","data":{"content":"First"},"timestamp":"2025-01-15T10:00:02Z"}`,
+		`{"type":"assistant.message","data":{"content":"Reply one"},"timestamp":"2025-01-15T10:00:03Z"}`,
+		`{"type":"session.model_change","data":{"newModel":""},"timestamp":"2025-01-15T10:00:04Z"}`,
+		`{"type":"user.message","data":{"content":"Second"},"timestamp":"2025-01-15T10:00:05Z"}`,
+		`{"type":"assistant.message","data":{"content":"Reply two"},"timestamp":"2025-01-15T10:00:06Z"}`,
+	)
+
+	_, msgs := parseAndValidateHelper(t, path, "m", 4)
+
+	assertEqual(t, "claude-sonnet-4.6", msgs[1].Model, "msgs[1].Model")
+	assertEqual(t, "", msgs[3].Model, "msgs[3].Model (reset)")
+}
+
 func TestSessionIDFromPath(t *testing.T) {
 	tests := []struct {
 		path string

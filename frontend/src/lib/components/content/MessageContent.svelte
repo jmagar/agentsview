@@ -39,10 +39,16 @@
 
   let isUser = $derived(message.role === "user");
 
-  let mainModel = $derived(computeMainModel(messagesStore.messages));
+  let mainModel = $derived(
+    !isSubagentContext &&
+    messagesStore.sessionId === message.session_id &&
+    !messagesStore.hasOlder
+      ? computeMainModel(messagesStore.messages)
+      : "",
+  );
 
   let offMainModel = $derived.by((): string => {
-    if (isUser || !message.model || isSubagentContext) return "";
+    if (isUser || !message.model || !mainModel) return "";
     return message.model !== mainModel ? message.model : "";
   });
 
