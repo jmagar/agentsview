@@ -4,6 +4,7 @@
   import type { Message, Session } from "../../api/types.js";
   import { getMessages, getSession } from "../../api/client.js";
   import { formatTokenCount } from "../../utils/format.js";
+  import { computeMainModel } from "../../utils/model.js";
   import { sessions } from "../../stores/sessions.svelte.js";
   import { router } from "../../stores/router.svelte.js";
   import MessageContent from "./MessageContent.svelte";
@@ -56,6 +57,9 @@
   let messageCountLabel = $derived(
     sessionMeta ? `${sessionMeta.message_count} messages` : null,
   );
+  let subagentModel = $derived(
+    messages ? computeMainModel(messages) : "",
+  );
 </script>
 
 <div class="subagent-inline">
@@ -74,6 +78,9 @@
         {@const ctxTokens = subagentSession.peak_context_tokens}
         {#if ctxTokens + subagentSession.total_output_tokens > 0}
           <span class="toggle-tokens">({formatTokenCount(ctxTokens)} ctx / {formatTokenCount(subagentSession.total_output_tokens)} out)</span>
+        {/if}
+        {#if subagentModel}
+          <span class="toggle-model" title={subagentModel}>{subagentModel}</span>
         {/if}
       {/if}
     </button>
@@ -192,6 +199,12 @@
     flex-shrink: 0;
   }
 
+  .toggle-model {
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
 
   .subagent-messages {
     border-left: 3px solid var(--accent-green);
