@@ -286,6 +286,11 @@
           <div
             class="task-item"
             class:task-error={task.status === "error"}
+            class:selected={insights.selectedTaskId === task.clientId}
+            role="button"
+            tabindex="0"
+            onclick={() => insights.selectTask(task.clientId)}
+            onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") insights.selectTask(task.clientId); }}
           >
             <div class="task-indicator">
               {#if task.status === "generating"}
@@ -311,31 +316,18 @@
               {:else}
                 <span class="task-phase">{task.phase}</span>
               {/if}
-              {#if task.logs.length > 0}
-                <div
-                  class="task-logs"
-                  class:task-logs-error={task.status === "error"}
-                  role="log"
-                  aria-live="polite"
-                >
-                  {#each task.logs as entry}
-                    <div
-                      class="task-log-line"
-                      class:log-stderr={entry.stream === "stderr"}
-                    >
-                      <span class="task-log-stream">{entry.stream}</span>
-                      <span class="task-log-text">{entry.line}</span>
-                    </div>
-                  {/each}
-                </div>
-              {/if}
             </div>
             <span class="task-agent">{task.agent}</span>
             <button
               class="task-dismiss"
-              onclick={() => task.status === "error"
-                ? insights.dismissTask(task.clientId)
-                : insights.cancelTask(task.clientId)}
+              onclick={(e) => {
+                e.stopPropagation();
+                if (task.status === "error") {
+                  insights.dismissTask(task.clientId);
+                } else {
+                  insights.cancelTask(task.clientId);
+                }
+              }}
               title={task.status === "error" ? "Dismiss" : "Cancel"}
             >
               <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor">
@@ -401,7 +393,78 @@
   </div>
 
   <main class="content-panel">
-    {#if insights.selectedItem}
+    {#if insights.selectedTask}
+      {@const task = insights.selectedTask}
+      <div class="reading-area">
+        <header class="insight-header">
+          <div class="header-top">
+            <span
+              class="header-badge"
+              class:badge-red={task.status === "error"}
+              class:badge-blue={task.status !== "error"}
+            >
+              {task.status === "error" ? "Error" : "Generating"}
+            </span>
+            <span class="header-date">
+              {typeShort(task.type, task.dateFrom, task.dateTo)}
+              {formatDateRange(task.dateFrom, task.dateTo)}
+            </span>
+            <button
+              class="delete-btn"
+              onclick={() => insights.dismissTask(task.clientId)}
+              title="Dismiss"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+              </svg>
+            </button>
+          </div>
+          <div class="header-details">
+            {#if task.project}
+              <span class="detail-chip">{task.project}</span>
+            {:else}
+              <span class="detail-chip muted">global</span>
+            {/if}
+            <span class="detail-text">{task.agent}</span>
+          </div>
+        </header>
+        {#if task.status === "error" && task.error}
+          <div class="task-error-banner">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8.982 1.566a1.13 1.13 0 00-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 01-1.1 0L7.1 5.995A.905.905 0 018 5zm.002 6a1 1 0 110 2 1 1 0 010-2z"/>
+            </svg>
+            <span>{task.error}</span>
+          </div>
+        {/if}
+        {#if task.logs.length > 0}
+          <div class="task-detail-logs" role="log">
+            <div class="task-detail-logs-header">
+              Execution Log
+              <span class="log-count">{task.logs.length} lines</span>
+            </div>
+            <div class="task-detail-logs-body">
+              {#each task.logs as entry}
+                <div
+                  class="task-log-line"
+                  class:log-stderr={entry.stream === "stderr"}
+                >
+                  <span class="task-log-stream">{entry.stream}</span>
+                  <span class="task-log-text">{entry.line}</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {:else if task.status === "generating"}
+          <div class="content-generating" style="margin-top: 48px">
+            <div class="gen-orbit">
+              <span class="orbit-ring"></span>
+              <span class="orbit-dot"></span>
+            </div>
+            <span class="gen-label">Waiting for {task.agent}...</span>
+          </div>
+        {/if}
+      </div>
+    {:else if insights.selectedItem}
       <div class="reading-area">
         <header class="insight-header">
           <div class="header-top">
@@ -737,6 +800,24 @@
     min-height: 42px;
     padding: 8px 14px 10px;
     overflow: hidden;
+    width: 100%;
+    text-align: left;
+    border-left: 2px solid transparent;
+    transition: background 0.1s;
+    cursor: pointer;
+  }
+
+  .task-item:hover {
+    background: var(--bg-surface-hover);
+  }
+
+  .task-item.selected {
+    background: var(--bg-surface-hover);
+    border-left-color: var(--accent-blue);
+  }
+
+  .task-item.selected.task-error {
+    border-left-color: var(--accent-red);
   }
 
   .task-error {
@@ -828,33 +909,72 @@
     word-break: break-word;
   }
 
-  .task-logs {
-    width: 100%;
-    max-height: 132px;
-    overflow-y: auto;
-    margin-top: 2px;
-    padding: 4px 6px;
-    border: 1px solid var(--border-muted);
-    border-radius: 6px;
-    background: var(--bg-inset);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 1.4;
-  }
-
-  .task-logs-error {
-    max-height: 240px;
-    border-color: color-mix(
+  /* ── Task Detail (main pane) ── */
+  .task-error-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: var(--radius-md);
+    background: color-mix(
       in srgb,
-      var(--accent-red) 30%,
+      var(--accent-red) 8%,
+      var(--bg-inset)
+    );
+    border: 1px solid color-mix(
+      in srgb,
+      var(--accent-red) 25%,
       var(--border-muted)
     );
+    color: var(--accent-red);
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 20px;
+  }
+
+  .task-error-banner svg {
+    flex-shrink: 0;
+    margin-top: 2px;
+    opacity: 0.8;
+  }
+
+  .task-detail-logs {
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .task-detail-logs-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    background: var(--bg-inset);
+    border-bottom: 1px solid var(--border-muted);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  .log-count {
+    font-weight: 400;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .task-detail-logs-body {
+    max-height: 50vh;
+    overflow-y: auto;
+    padding: 8px 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
   }
 
   .task-log-line {
     display: grid;
-    grid-template-columns: 42px 1fr;
-    gap: 6px;
+    grid-template-columns: 48px 1fr;
+    gap: 8px;
     color: var(--text-secondary);
     white-space: pre-wrap;
     word-break: break-word;
@@ -863,6 +983,7 @@
   .task-log-stream {
     text-transform: uppercase;
     color: var(--text-muted);
+    font-size: 10px;
   }
 
   .task-log-text {
@@ -1086,6 +1207,10 @@
 
   .badge-purple {
     background: var(--accent-purple);
+  }
+
+  .badge-red {
+    background: var(--accent-red);
   }
 
   .header-date {

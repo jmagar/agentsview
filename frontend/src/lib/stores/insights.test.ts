@@ -44,6 +44,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   insights.items = [];
   insights.selectedId = null;
+  insights.selectedTaskId = null;
   insights.loading = false;
   insights.tasks = [];
   insights.promptText = "";
@@ -185,9 +186,20 @@ describe("setProject", () => {
 });
 
 describe("select", () => {
-  it("sets selectedId", () => {
+  it("sets selectedId and clears selectedTaskId", () => {
+    insights.selectedTaskId = "some-task";
     insights.select(42);
     expect(insights.selectedId).toBe(42);
+    expect(insights.selectedTaskId).toBeNull();
+  });
+});
+
+describe("selectTask", () => {
+  it("sets selectedTaskId and clears selectedId", () => {
+    insights.selectedId = 42;
+    insights.selectTask("task-123");
+    expect(insights.selectedTaskId).toBe("task-123");
+    expect(insights.selectedId).toBeNull();
   });
 });
 
@@ -268,7 +280,7 @@ describe("generate (multi-task)", () => {
     expect(insights.items[0]).toEqual(s2);
   });
 
-  it("sets error on task failure", async () => {
+  it("sets error on task failure and selects task", async () => {
     const mockHandle = {
       abort: vi.fn(),
       done: Promise.reject(new Error("CLI not found")),
@@ -283,6 +295,10 @@ describe("generate (multi-task)", () => {
     expect(insights.tasks).toHaveLength(1);
     expect(insights.tasks[0]!.status).toBe("error");
     expect(insights.tasks[0]!.error).toBe("CLI not found");
+    expect(insights.selectedTaskId).toBe(
+      insights.tasks[0]!.clientId,
+    );
+    expect(insights.selectedId).toBeNull();
   });
 
   it("captures streaming logs per task", async () => {

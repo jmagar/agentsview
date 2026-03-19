@@ -43,6 +43,7 @@ class InsightsStore {
   agent: AgentName = $state("claude");
   items: Insight[] = $state([]);
   selectedId: number | null = $state(null);
+  selectedTaskId: string | null = $state(null);
   loading = $state(false);
   promptText: string = $state("");
   tasks: InsightTask[] = $state([]);
@@ -53,6 +54,13 @@ class InsightsStore {
   get selectedItem(): Insight | undefined {
     return this.items.find(
       (s) => s.id === this.selectedId,
+    );
+  }
+
+  get selectedTask(): InsightTask | undefined {
+    if (this.selectedTaskId === null) return undefined;
+    return this.tasks.find(
+      (t) => t.clientId === this.selectedTaskId,
     );
   }
 
@@ -111,6 +119,12 @@ class InsightsStore {
 
   select(id: number) {
     this.selectedId = id;
+    this.selectedTaskId = null;
+  }
+
+  selectTask(clientId: string) {
+    this.selectedTaskId = clientId;
+    this.selectedId = null;
   }
 
   generate() {
@@ -205,6 +219,8 @@ class InsightsStore {
             ? { ...t, status: "error" as const, error: msg }
             : t,
         );
+        this.selectedTaskId = clientId;
+        this.selectedId = null;
       });
   }
 
@@ -217,6 +233,9 @@ class InsightsStore {
     this.tasks = this.tasks.filter(
       (t) => t.clientId !== clientId,
     );
+    if (this.selectedTaskId === clientId) {
+      this.selectedTaskId = null;
+    }
   }
 
   async deleteItem(id: number) {
