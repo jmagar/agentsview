@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tidwall/gjson"
 )
@@ -435,7 +436,9 @@ func ExtractIflowProjectHints(
 // isIflowSystemMessage returns true if the content matches
 // a known system-injected user message pattern.
 func isIflowSystemMessage(content string) bool {
-	trimmed := strings.TrimSpace(content)
+	trimmed := strings.TrimLeftFunc(content, func(r rune) bool {
+		return r == '\uFEFF' || unicode.IsSpace(r)
+	})
 	prefixes := [...]string{
 		"This session is being continued",
 		"[Request interrupted",

@@ -25,8 +25,8 @@ func isUndefinedTable(err error) bool {
 // Sync manages push-only sync from local SQLite to a remote
 // PostgreSQL database.
 type Sync struct {
-	pg     *sql.DB
-	local  *db.DB
+	pg      *sql.DB
+	local   *db.DB
 	machine string
 	schema  string
 
@@ -77,6 +77,11 @@ func New(
 		schema:  schema,
 	}, nil
 }
+
+// DB returns the underlying PostgreSQL connection pool.
+// Callers may use it to query schema metadata (e.g. GetSchemaVersion)
+// before calling EnsureSchema.
+func (s *Sync) DB() *sql.DB { return s.pg }
 
 // Close closes the PostgreSQL connection pool.
 // Callers must ensure no Push operations are in-flight

@@ -664,4 +664,3 @@ func startUnwatchedPoll(engine *sync.Engine) {
 		engine.SyncAll(context.Background(), nil)
 	}
 }
-

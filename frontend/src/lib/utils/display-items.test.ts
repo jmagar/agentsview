@@ -18,6 +18,7 @@ function msg(
     token_usage: null,
     context_tokens: 0,
     output_tokens: 0,
+    is_system: false,
     ...overrides,
   };
 }

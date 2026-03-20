@@ -24,9 +24,10 @@ function makeSearchResponse(
     results: Array.from({ length: count }, (_, i) => ({
       session_id: `s${i}`,
       project: "proj",
+      agent: "claude",
+      name: "session name",
       ordinal: i,
-      role: "assistant",
-      timestamp: new Date().toISOString(),
+      session_ended_at: new Date().toISOString(),
       snippet: `result ${i}`,
       rank: i,
     })),
@@ -52,6 +53,7 @@ describe("SearchStore", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     searchStore.clear();
+    searchStore.resetSort();
     vi.clearAllMocks();
   });
 
@@ -248,8 +250,87 @@ describe("SearchStore", () => {
 
     expect(api.search).toHaveBeenCalledWith(
       "test",
-      { project: undefined, limit: 30 },
+      { project: undefined, limit: 30, sort: "relevance" },
       { signal: expect.any(AbortSignal) },
+    );
+  });
+
+  it("sort defaults to relevance", () => {
+    expect(searchStore.sort).toBe("relevance");
+  });
+
+  it("setSort updates sort state", () => {
+    searchStore.setSort("recency");
+    expect(searchStore.sort).toBe("recency");
+    searchStore.setSort("relevance");
+    expect(searchStore.sort).toBe("relevance");
+  });
+
+  it("setSort re-runs search when query is active", async () => {
+    vi.mocked(api.search)
+      .mockResolvedValueOnce(makeSearchResponse("hello", 2))
+      .mockResolvedValueOnce(makeSearchResponse("hello", 1));
+
+    // Run first search
+    searchStore.search("hello");
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    expect(searchStore.results.length).toBe(2);
+
+    // Switch sort — should trigger a new search immediately
+    searchStore.setSort("recency");
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    expect(api.search).toHaveBeenCalledTimes(2);
+    expect(api.search).toHaveBeenLastCalledWith(
+      "hello",
+      expect.objectContaining({ sort: "recency" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(searchStore.results.length).toBe(1);
+  });
+
+  it("setSort does nothing when no query is active", () => {
+    searchStore.clear();
+    searchStore.setSort("recency");
+    expect(api.search).not.toHaveBeenCalled();
+  });
+
+  it("clear() does not reset sort (sort persists within a palette session)", () => {
+    searchStore.setSort("recency");
+    expect(searchStore.sort).toBe("recency");
+    searchStore.clear();
+    expect(searchStore.sort).toBe("recency");
+  });
+
+  it("resetSort() resets sort to relevance", () => {
+    searchStore.setSort("recency");
+    expect(searchStore.sort).toBe("recency");
+    searchStore.resetSort();
+    expect(searchStore.sort).toBe("relevance");
+  });
+
+  it("setSort cancels pending debounced search before running", async () => {
+    vi.mocked(api.search).mockResolvedValue(makeSearchResponse("hello", 1));
+
+    // Start a search but don't let the debounce fire yet
+    searchStore.search("hello");
+    // Immediately switch sort — should cancel the queued debounce
+    searchStore.setSort("recency");
+    // Advance timers past debounce window
+    vi.advanceTimersByTime(DEBOUNCE_MS + 100);
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    // Only the immediate setSort call should have fired, not the queued debounce
+    expect(api.search).toHaveBeenCalledTimes(1);
+    expect(api.search).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({ sort: "recency" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 });

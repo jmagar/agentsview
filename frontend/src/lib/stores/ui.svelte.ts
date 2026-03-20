@@ -255,6 +255,12 @@ class UIStore {
     this.selectedOrdinal = null;
   }
 
+  clearScrollState() {
+    this.selectedOrdinal = null;
+    this.pendingScrollOrdinal = null;
+    this.pendingScrollSession = null;
+  }
+
   scrollToOrdinal(ordinal: number, sessionId?: string) {
     this.selectedOrdinal = ordinal;
     this.pendingScrollOrdinal = ordinal;

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, onDestroy } from "svelte";
   import { ui } from "../../stores/ui.svelte.js";
   import { sessions } from "../../stores/sessions.svelte.js";
   import { searchStore } from "../../stores/search.svelte.js";
@@ -10,11 +10,22 @@
     sanitizeSnippet,
   } from "../../utils/format.js";
   import { agentColor } from "../../utils/agents.js";
+  import { copyToClipboard } from "../../utils/clipboard.js";
+  import { stripIdPrefix } from "../../utils/resume.js";
   import type { Session, SearchResult } from "../../api/types.js";
 
   let inputRef: HTMLInputElement | undefined = $state(undefined);
   let selectedIndex: number = $state(0);
   let inputValue: string = $state("");
+
+  // Clear state and reset sort whenever the palette is unmounted, regardless
+  // of close path (Escape key, overlay click, Cmd+K toggle, or any other
+  // mechanism). This ensures stale results and in-flight requests are always
+  // cancelled even when the caller bypasses close().
+  onDestroy(() => {
+    searchStore.clear();
+    searchStore.resetSort();
+  });
 
   // Filtered recent sessions (client-side filter)
   let recentSessions = $derived.by(() => {
@@ -92,13 +103,18 @@
 
   function selectSearchResult(r: SearchResult) {
     sessions.selectSession(r.session_id);
-    ui.scrollToOrdinal(r.ordinal, r.session_id);
+    if (r.ordinal !== -1) {
+      ui.scrollToOrdinal(r.ordinal, r.session_id);
+    } else {
+      // Name-only match: clear any stale selection/scroll state so the
+      // previously highlighted ordinal is not left active.
+      ui.clearScrollState();
+    }
     close();
   }
 
   function close() {
     inputValue = "";
-    searchStore.clear();
     ui.activeModal = null;
   }
 
@@ -149,6 +165,20 @@
 
     <div class="palette-results">
       {#if showSearchResults}
+        <div class="palette-sort">
+          <button
+            class="sort-btn"
+            class:active={searchStore.sort === "relevance"}
+            onmousedown={(e: MouseEvent) => e.preventDefault()}
+            onclick={() => { searchStore.setSort("relevance"); selectedIndex = 0; }}
+          >Relevance</button>
+          <button
+            class="sort-btn"
+            class:active={searchStore.sort === "recency"}
+            onmousedown={(e: MouseEvent) => e.preventDefault()}
+            onclick={() => { searchStore.setSort("recency"); selectedIndex = 0; }}
+          >Recency</button>
+        </div>
         {#if searchStore.isSearching}
           <div class="palette-empty">Searching...</div>
         {:else if searchStore.results.length === 0}
@@ -161,15 +191,33 @@
               onclick={() => selectSearchResult(result)}
               onmouseenter={() => (selectedIndex = i)}
             >
-              <span class="item-role" class:user={result.role === "user"}>
-                {result.role === "user" ? "U" : "A"}
-              </span>
-              <span class="item-text">
-                {@html sanitizeSnippet(result.snippet)}
+              <span
+                class="item-dot"
+                style:background={agentColor(result.agent)}
+              ></span>
+              <span class="item-body">
+                {#if result.name}
+                  <span class="item-name">{truncate(result.name, 60)}</span>
+                {/if}
+                {#if result.snippet && result.snippet.replace(/<\/?mark>/g, '') !== result.name}
+                  <span class="item-snippet">
+                    {@html sanitizeSnippet(result.snippet)}
+                  </span>
+                {/if}
               </span>
               <span class="item-meta">
-                {truncate(result.project, 20)}
+                {truncate(result.project, 20)}{result.session_ended_at ? ' · ' + formatRelativeTime(result.session_ended_at) : ''}
               </span>
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <span
+                class="item-id"
+                title="Copy session ID"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  copyToClipboard(result.session_id);
+                }}
+              >{stripIdPrefix(result.session_id, result.agent).slice(0, 8)}</span>
             </button>
           {/each}
         {/if}
@@ -183,10 +231,10 @@
             onmouseenter={() => (selectedIndex = i)}
           >
             <span class="item-dot" style:background={agentColor(session.agent)}></span>
-            <span class="item-text">
-              {session.first_message
+            <span class="item-body">
+              <span class="item-name">{session.first_message
                 ? truncate(session.first_message, 60)
-                : session.project}
+                : session.project}</span>
             </span>
             <span class="item-meta">
               {formatRelativeTime(session.ended_at ?? session.started_at)}
@@ -296,31 +344,28 @@
     flex-shrink: 0;
   }
 
-  .item-role {
-    width: 18px;
-    height: 18px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-sm);
-    font-size: 10px;
-    font-weight: 700;
-    flex-shrink: 0;
-    background: var(--assistant-bg);
-    color: var(--accent-purple);
-  }
-
-  .item-role.user {
-    background: var(--user-bg);
-    color: var(--accent-blue);
-  }
-
-  .item-text {
+  .item-body {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .item-name {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+
+  .item-snippet {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 11px;
+    color: var(--text-muted);
   }
 
   .item-meta {
@@ -335,5 +380,44 @@
     text-align: center;
     color: var(--text-muted);
     font-size: 13px;
+  }
+
+  .palette-sort {
+    display: flex;
+    gap: 4px;
+    padding: 6px 14px 2px;
+  }
+
+  .sort-btn {
+    padding: 2px 8px;
+    font-size: 11px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-family: var(--font-sans);
+  }
+
+  .sort-btn.active {
+    background: var(--bg-surface-hover);
+    color: var(--text-primary);
+    border-color: var(--accent-purple);
+  }
+
+  .item-id {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: pointer;
+    padding: 1px 3px;
+    border-radius: var(--radius-sm);
+  }
+
+  .item-id:hover {
+    background: var(--bg-inset);
+    color: var(--text-primary);
   }
 </style>

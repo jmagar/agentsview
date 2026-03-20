@@ -1176,7 +1176,7 @@ func TestIsSystemPersisted(t *testing.T) {
 	}
 }
 
-func TestSearch(t *testing.T) {
+func TestSearchBasic(t *testing.T) {
 	d := testDB(t)
 	requireFTS(t, d)
 
@@ -4633,6 +4633,77 @@ func TestMessageContentFingerprint(t *testing.T) {
 	}
 	if min != 5 {
 		t.Errorf("min = %d, want 5", min)
+	}
+}
+
+func TestSystemMessageFingerprint(t *testing.T) {
+	d := testDB(t)
+	sess := Session{ID: "sys-fp", Project: "p", Machine: "local", Agent: "claude"}
+	if err := d.UpsertSession(sess); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// System ordinals: 0 and 2 → "0,2".
+	if err := d.InsertMessages([]Message{
+		{SessionID: "sys-fp", Ordinal: 0, Role: "user", Content: "sys", ContentLength: 3, IsSystem: true},
+		{SessionID: "sys-fp", Ordinal: 1, Role: "assistant", Content: "hi", ContentLength: 2},
+		{SessionID: "sys-fp", Ordinal: 2, Role: "user", Content: "sys2", ContentLength: 4, IsSystem: true},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	fp, err := d.SystemMessageFingerprint("sys-fp")
+	if err != nil {
+		t.Fatalf("SystemMessageFingerprint: %v", err)
+	}
+	if fp != "0,2" {
+		t.Errorf("fingerprint = %q, want %q", fp, "0,2")
+	}
+
+	// Regression: {0,3} and {1,2} both produce sum=3 and sum-of-squares differs,
+	// but {0,4,5} and {1,2,6} (sum=9, sumSq=41) collide under the two-component
+	// scheme. The string fingerprint is exact.
+	for _, tc := range []struct {
+		id       string
+		ordinals []int // which ordinals are system
+		want     string
+	}{
+		{"fp-03", []int{0, 3}, "0,3"},
+		{"fp-12", []int{1, 2}, "1,2"},
+		{"fp-045", []int{0, 4, 5}, "0,4,5"},
+		{"fp-126", []int{1, 2, 6}, "1,2,6"},
+	} {
+		s := Session{ID: tc.id, Project: "p", Machine: "local", Agent: "claude"}
+		if err := d.UpsertSession(s); err != nil {
+			t.Fatalf("upsert %s: %v", tc.id, err)
+		}
+		maxOrd := 0
+		for _, o := range tc.ordinals {
+			if o > maxOrd {
+				maxOrd = o
+			}
+		}
+		msgs := make([]Message, maxOrd+1)
+		systemSet := make(map[int]bool)
+		for _, o := range tc.ordinals {
+			systemSet[o] = true
+		}
+		for i := range maxOrd + 1 {
+			msgs[i] = Message{
+				SessionID: tc.id, Ordinal: i, Role: "user",
+				Content: "x", ContentLength: 1,
+				IsSystem: systemSet[i],
+			}
+		}
+		if err := d.InsertMessages(msgs); err != nil {
+			t.Fatalf("insert %s: %v", tc.id, err)
+		}
+		got, err := d.SystemMessageFingerprint(tc.id)
+		if err != nil {
+			t.Fatalf("SystemMessageFingerprint %s: %v", tc.id, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.id, got, tc.want)
+		}
 	}
 }
 

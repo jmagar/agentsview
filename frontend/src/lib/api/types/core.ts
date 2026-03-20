@@ -69,6 +69,7 @@ export interface Message {
   context_tokens: number;
   output_tokens: number;
   tool_calls?: ToolCall[];
+  is_system: boolean;
 }
 
 /** Matches Go MinimapEntry struct */
@@ -81,9 +82,10 @@ export type MinimapEntry = Pick<
 export interface SearchResult {
   session_id: string;
   project: string;
+  agent: string;
+  name: string;
   ordinal: number;
-  role: string;
-  timestamp: string;
+  session_ended_at: string;
   snippet: string;
   rank: number;
 }

@@ -8,13 +8,15 @@ import {
 } from "vitest";
 import { mount, unmount, tick } from "svelte";
 
-const { mockUi, mockSessions, mockSearchStore } = vi.hoisted(
+const { mockUi, mockSessions, mockSearchStore, mockCopyToClipboard } = vi.hoisted(
   () => ({
     mockUi: {
       activeModal: "commandPalette" as
         | "commandPalette"
         | null,
       scrollToOrdinal: vi.fn(),
+      clearSelection: vi.fn(),
+      clearScrollState: vi.fn(),
     },
     mockSessions: {
       sessions: [] as Array<{
@@ -35,9 +37,13 @@ const { mockUi, mockSessions, mockSearchStore } = vi.hoisted(
     mockSearchStore: {
       results: [] as Array<unknown>,
       isSearching: false,
+      sort: "relevance" as "relevance" | "recency",
       search: vi.fn(),
       clear: vi.fn(),
+      resetSort: vi.fn(),
+      setSort: vi.fn(),
     },
+    mockCopyToClipboard: vi.fn(),
   }),
 );
 
@@ -57,8 +63,31 @@ vi.mock("../../stores/messages.svelte.js", () => ({
   messages: {},
 }));
 
+vi.mock("../../utils/clipboard.js", () => ({
+  copyToClipboard: mockCopyToClipboard,
+}));
+
 // @ts-ignore
 import CommandPalette from "./CommandPalette.svelte";
+
+/**
+ * Polls via tick() until the selector matches or the iteration limit is hit.
+ * Svelte 5's microtask scheduler requires explicit tick() calls to flush DOM
+ * updates in jsdom — setTimeout-based waitFor() retries don't drive it.
+ */
+async function tickUntil(
+  selector: string,
+  maxTicks = 20,
+): Promise<HTMLElement> {
+  for (let i = 0; i < maxTicks; i++) {
+    await tick();
+    const el = document.querySelector<HTMLElement>(selector);
+    if (el) return el;
+  }
+  throw new Error(
+    `"${selector}" not found after ${maxTicks} tick() calls`,
+  );
+}
 
 function makeSession(id: string, agent: string) {
   return {
@@ -80,6 +109,8 @@ function makeSession(id: string, agent: string) {
 describe("CommandPalette", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // jsdom does not implement scrollIntoView
+    Element.prototype.scrollIntoView = vi.fn();
     mockSearchStore.results = [];
     mockSearchStore.isSearching = false;
     mockSessions.filters.project = "";
@@ -106,6 +137,113 @@ describe("CommandPalette", () => {
     expect(dots[1]?.getAttribute("style")).toContain(
       "var(--accent-blue)",
     );
+
+    unmount(component);
+  });
+
+  it("calls clear() and resetSort() on unmount via onDestroy", async () => {
+    const component = mount(CommandPalette, {
+      target: document.body,
+    });
+
+    await tick();
+
+    unmount(component);
+
+    expect(mockSearchStore.clear).toHaveBeenCalledOnce();
+    expect(mockSearchStore.resetSort).toHaveBeenCalledOnce();
+  });
+
+  it("copies canonical session_id to clipboard, not stripped display ID", async () => {
+    // Prefixed ID: stripIdPrefix("codex:abc123def456", "codex") → "abc123def456"
+    // Display shows first 8 chars: "abc123de"
+    // Copy must use the full canonical "codex:abc123def456"
+    mockSearchStore.results = [
+      {
+        session_id: "codex:abc123def456",
+        project: "test-proj",
+        agent: "codex",
+        ordinal: 0,
+        session_ended_at: "2026-01-01T00:00:00Z",
+        snippet: "some matching text",
+        rank: 0,
+      },
+    ];
+
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    // Type 3+ chars so showSearchResults becomes true.
+    const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+    input.value = "abc";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    const badge = await tickUntil(".item-id");
+    expect(badge.textContent?.trim()).toBe("abc123de");
+
+    badge.click();
+    await tick();
+
+    expect(mockCopyToClipboard).toHaveBeenCalledWith("codex:abc123def456");
+
+    unmount(component);
+  });
+
+  it("omits relative-time segment when session_ended_at is empty", async () => {
+    mockSearchStore.results = [
+      {
+        session_id: "codex:emptytime123",
+        project: "my-proj",
+        agent: "codex",
+        ordinal: 0,
+        session_ended_at: "",
+        snippet: "some text",
+        rank: 0,
+      },
+    ];
+
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+    input.value = "abc";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    const meta = await tickUntil(".item-meta");
+    // Should show project but no " · <time>" segment.
+    expect(meta.textContent?.trim()).toBe("my-proj");
+
+    unmount(component);
+  });
+
+  it("name-only result (ordinal === -1) selects session and clears selection without scrolling", async () => {
+    mockSearchStore.results = [
+      {
+        session_id: "claude:nameonly123",
+        project: "proj-a",
+        agent: "claude",
+        name: "nameonly match",
+        ordinal: -1,
+        session_ended_at: "2026-01-01T00:00:00Z",
+        snippet: "",
+        rank: 0,
+      },
+    ];
+
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+
+    const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+    input.value = "nameonly";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    const item = await tickUntil(".palette-item");
+    item.click();
+    await tick();
+
+    expect(mockSessions.selectSession).toHaveBeenCalledWith("claude:nameonly123");
+    expect(mockUi.scrollToOrdinal).not.toHaveBeenCalled();
+    expect(mockUi.clearScrollState).toHaveBeenCalled();
 
     unmount(component);
   });

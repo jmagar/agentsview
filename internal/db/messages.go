@@ -557,6 +557,28 @@ func (db *DB) ToolCallCount(sessionID string) (int, error) {
 	return n, err
 }
 
+// SystemMessageFingerprint returns the ordered, comma-separated list of
+// ordinals for system messages in a session (e.g. "0,2,5"). This is an
+// exact fingerprint of the system-message ordinal set: any reclassification
+// of which messages are system — even when counts, sums, or sums-of-squares
+// remain equal — produces a different string. Used by the PG push fast-path.
+func (db *DB) SystemMessageFingerprint(sessionID string) (string, error) {
+	var v sql.NullString
+	err := db.getReader().QueryRow(
+		`SELECT GROUP_CONCAT(ordinal, ',')
+		 FROM (
+		   SELECT ordinal FROM messages
+		   WHERE session_id = ? AND is_system = 1
+		   ORDER BY ordinal
+		 )`,
+		sessionID,
+	).Scan(&v)
+	if err != nil {
+		return "", err
+	}
+	return v.String, nil
+}
+
 // ToolCallContentFingerprint returns the sum of result_content_length
 // values for a session's tool calls, used as a lightweight content
 // change detector.

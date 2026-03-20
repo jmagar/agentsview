@@ -24,6 +24,7 @@ function makeMsg(
     context_tokens: 0,
     output_tokens: 0,
     timestamp: "2024-01-01T00:00:00Z",
+    is_system: false,
   };
   return { ...defaults, ...overrides };
 }

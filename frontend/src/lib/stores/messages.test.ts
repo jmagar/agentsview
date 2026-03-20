@@ -60,6 +60,7 @@ function makeMessage(ordinal: number): Message {
     token_usage: null,
     context_tokens: 0,
     output_tokens: 0,
+    is_system: false,
   };
 }
 
