@@ -217,8 +217,8 @@ func runPGServe(args []string) {
 		ctx, store.DB(),
 	); err != nil {
 		fatal("pg serve: schema incompatible: %v\n"+
-			"Run 'agentsview pg push' from a machine "+
-			"with write access to migrate the schema.", err)
+			"Drop and recreate the PG schema, then run "+
+			"'agentsview pg push --full' to repopulate.", err)
 	}
 
 	appCfg.Host = *host

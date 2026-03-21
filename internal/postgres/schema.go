@@ -153,6 +153,16 @@ func CheckSchemaCompat(
 		)
 	}
 	rows.Close()
+
+	rows, err = db.QueryContext(ctx,
+		`SELECT is_system FROM messages LIMIT 0`)
+	if err != nil {
+		return fmt.Errorf(
+			"messages table missing is_system column: %w",
+			err,
+		)
+	}
+	rows.Close()
 	return nil
 }
 

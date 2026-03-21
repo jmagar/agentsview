@@ -391,6 +391,7 @@ func TestSearch(t *testing.T) {
 func TestSearchEmptyQueryGuard(t *testing.T) {
 	t.Parallel()
 	d := testDB(t)
+	requireFTS(t, d)
 	insertSession(t, d, "s1", "proj")
 	insertMessages(t, d, userMsg("s1", 0, "hello world"))
 
@@ -413,6 +414,7 @@ func TestSearchEmptyQueryGuard(t *testing.T) {
 func TestSearchDeduplicationManyMessages(t *testing.T) {
 	t.Parallel()
 	d := testDB(t)
+	requireFTS(t, d)
 
 	insertSession(t, d, "s1", "proj", func(s *Session) {
 		s.Agent = "claude"
@@ -465,6 +467,7 @@ func TestSearchDeduplicationManyMessages(t *testing.T) {
 func TestSearchTieBreak(t *testing.T) {
 	t.Parallel()
 	d := testDB(t)
+	requireFTS(t, d)
 
 	insertSession(t, d, "s1", "proj")
 	// Insert ordinal=1 first so it gets the lower rowid. If the tie-breaker
@@ -705,6 +708,7 @@ func TestSearchSession(t *testing.T) {
 func TestSearchPaginationStability(t *testing.T) {
 	t.Parallel()
 	d := testDB(t)
+	requireFTS(t, d)
 
 	// Three sessions with identical timestamps — ordering must be
 	// deterministic via session_id tie-breaker.
