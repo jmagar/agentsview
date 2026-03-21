@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -136,63 +135,6 @@ func EnsureSchema(
 		}
 	}
 
-	// Check whether the schema is being upgraded so we can set
-	// per-machine backfill_pending flags before advancing the
-	// version. Each machine that has existing rows needs a full
-	// push to backfill newly added columns.
-	priorVer, _ := GetSchemaVersion(ctx, db)
-	if priorVer < SchemaVersion {
-		// Find machines that have sessions with message rows —
-		// only those need a full push to backfill is_system.
-		// Sessions with zero messages have nothing to backfill.
-		var machines []string
-		rows, qErr := db.QueryContext(ctx,
-			`SELECT DISTINCT s.machine FROM sessions s
-			 WHERE EXISTS (
-			   SELECT 1 FROM messages m
-			   WHERE m.session_id = s.id
-			 )`,
-		)
-		if qErr != nil {
-			return fmt.Errorf(
-				"discovering machines for backfill: %w",
-				qErr,
-			)
-		}
-		for rows.Next() {
-			var m string
-			if err := rows.Scan(&m); err != nil {
-				rows.Close()
-				return fmt.Errorf(
-					"scanning machine for backfill: %w",
-					err,
-				)
-			}
-			machines = append(machines, m)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return fmt.Errorf(
-				"iterating machines for backfill: %w",
-				err,
-			)
-		}
-		rows.Close()
-		for _, m := range machines {
-			key := "backfill_pending:" + m
-			if _, err := db.ExecContext(ctx,
-				`INSERT INTO sync_metadata (key, value)
-				 VALUES ($1, 'true')
-				 ON CONFLICT (key) DO NOTHING`,
-				key,
-			); err != nil {
-				return fmt.Errorf(
-					"setting %s: %w", key, err,
-				)
-			}
-		}
-	}
-
 	// Record schema version for future migration detection.
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO sync_metadata (key, value)
@@ -205,148 +147,6 @@ func EnsureSchema(
 		return fmt.Errorf("setting schema version: %w", err)
 	}
 	return nil
-}
-
-// IsBackfillPending reports whether any machine still has a
-// pending column backfill. Used by CheckSchemaCompat to block
-// pg serve until all machines have completed the migration.
-// Returns false on any query error so callers treat an
-// unreadable flag as "not pending" and proceed normally.
-func IsBackfillPending(ctx context.Context, db *sql.DB) bool {
-	var count int
-	err := db.QueryRowContext(ctx,
-		// Only count keys for machines that still have
-		// sessions with message rows in PG. Keys for
-		// retired machines or sessions with zero messages
-		// have nothing to backfill and must not block
-		// pg serve.
-		`SELECT COUNT(*) FROM sync_metadata
-		 WHERE key LIKE 'backfill_pending:%'
-		   AND value = 'true'
-		   AND substring(key FROM 18) IN (
-		       SELECT DISTINCT s.machine FROM sessions s
-		       WHERE EXISTS (
-		         SELECT 1 FROM messages m
-		         WHERE m.session_id = s.id
-		       )
-		   )`,
-	).Scan(&count)
-	return err == nil && count > 0
-}
-
-// IsBackfillPendingForMachine reports whether the given machine
-// has a pending column backfill (e.g. a previous push was
-// interrupted). Returns false on any query error.
-func IsBackfillPendingForMachine(
-	ctx context.Context, db *sql.DB, machine string,
-) bool {
-	var v string
-	err := db.QueryRowContext(ctx,
-		`SELECT value FROM sync_metadata
-		 WHERE key = $1`,
-		"backfill_pending:"+machine,
-	).Scan(&v)
-	return err == nil && v == "true"
-}
-
-// ClearBackfillPending removes the backfill_pending flag for a
-// specific machine. Used after a successful full push and also
-// exposed for manual cleanup of retired machines that can no
-// longer push.
-func ClearBackfillPending(
-	ctx context.Context, db *sql.DB, machine string,
-) error {
-	res, err := db.ExecContext(ctx,
-		`DELETE FROM sync_metadata WHERE key = $1`,
-		"backfill_pending:"+machine,
-	)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("checking rows affected: %w", err)
-	}
-	if n == 0 {
-		return fmt.Errorf(
-			"no backfill_pending flag found for machine %q",
-			machine,
-		)
-	}
-	return nil
-}
-
-// clearBackfillPending is the internal non-fatal variant used
-// during push. Logs on error rather than returning it so the
-// push result is not invalidated. Silently ignores the
-// zero-row case since no pending flag is the normal state.
-func clearBackfillPending(
-	ctx context.Context, db *sql.DB, machine string,
-) {
-	_, err := db.ExecContext(ctx,
-		`DELETE FROM sync_metadata WHERE key = $1`,
-		"backfill_pending:"+machine,
-	)
-	if err != nil {
-		log.Printf(
-			"warning: clearing backfill_pending for %s: %v",
-			machine, err,
-		)
-	}
-}
-
-// clearStaleBackfillKeys removes backfill_pending keys for
-// machines that no longer have any sessions in PG. This handles
-// the case where a machine was renamed — the old key would
-// otherwise linger forever and block pg serve.
-func clearStaleBackfillKeys(
-	ctx context.Context, db *sql.DB,
-) {
-	if _, err := db.ExecContext(ctx,
-		`DELETE FROM sync_metadata
-		 WHERE key LIKE 'backfill_pending:%'
-		   AND substring(key FROM 18) NOT IN (
-		       SELECT DISTINCT machine FROM sessions
-		   )`,
-	); err != nil {
-		log.Printf(
-			"warning: clearing stale backfill keys: %v",
-			err,
-		)
-	}
-}
-
-// PendingBackfillMachines returns the list of machines that still
-// have a backfill_pending flag and sessions with message rows in
-// PG. Sessions with zero messages have nothing to backfill.
-func PendingBackfillMachines(
-	ctx context.Context, db *sql.DB,
-) ([]string, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT substring(key FROM 18) FROM sync_metadata
-		 WHERE key LIKE 'backfill_pending:%'
-		   AND value = 'true'
-		   AND substring(key FROM 18) IN (
-		       SELECT DISTINCT s.machine FROM sessions s
-		       WHERE EXISTS (
-		         SELECT 1 FROM messages m
-		         WHERE m.session_id = s.id
-		       )
-		   )`,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var machines []string
-	for rows.Next() {
-		var m string
-		if err := rows.Scan(&m); err != nil {
-			return nil, err
-		}
-		machines = append(machines, m)
-	}
-	return machines, rows.Err()
 }
 
 // GetSchemaVersion reads the schema version from sync_metadata.
@@ -425,27 +225,6 @@ func CheckSchemaCompat(
 				"run 'agentsview pg push' with write "+
 				"access to finish the migration",
 			ver, SchemaVersion,
-		)
-	}
-
-	// Reject schemas where the column exists but backfill
-	// was interrupted. Serving this data would expose stale
-	// is_system=false values for historical messages.
-	pending, pErr := PendingBackfillMachines(ctx, db)
-	if pErr != nil {
-		return fmt.Errorf(
-			"checking backfill status: %w", pErr,
-		)
-	}
-	if len(pending) > 0 {
-		return fmt.Errorf(
-			"is_system backfill is incomplete for "+
-				"machine(s): %v; run 'agentsview pg "+
-				"push --full' from each machine, or "+
-				"'agentsview pg push "+
-				"--clear-backfill=MACHINE' to "+
-				"acknowledge retired machines",
-			pending,
 		)
 	}
 	return nil

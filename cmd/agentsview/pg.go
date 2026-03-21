@@ -42,9 +42,6 @@ func runPGPush(args []string) {
 	fs := flag.NewFlagSet("pg push", flag.ExitOnError)
 	full := fs.Bool("full", false,
 		"Force full local resync and PG push")
-	clearBackfill := fs.String("clear-backfill", "",
-		"Clear backfill_pending flag for a retired machine "+
-			"that can no longer push")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -64,33 +61,6 @@ func runPGPush(args []string) {
 	}
 	if pgCfg.URL == "" {
 		fatal("pg push: url not configured")
-	}
-
-	// --clear-backfill is a PG-only operation: skip local
-	// sync/SQLite setup entirely.
-	if *clearBackfill != "" {
-		pgDB, oErr := postgres.Open(
-			pgCfg.URL, pgCfg.Schema, pgCfg.AllowInsecure,
-		)
-		if oErr != nil {
-			fatal("pg push: %v", oErr)
-		}
-		defer pgDB.Close()
-		ctx, stop := signal.NotifyContext(
-			context.Background(), os.Interrupt,
-		)
-		defer stop()
-		if err := postgres.ClearBackfillPending(
-			ctx, pgDB, *clearBackfill,
-		); err != nil {
-			fatal("pg push: clearing backfill for %s: %v",
-				*clearBackfill, err)
-		}
-		fmt.Printf(
-			"Cleared backfill_pending for machine %q\n",
-			*clearBackfill,
-		)
-		return
 	}
 
 	database, err := db.Open(appCfg.DBPath)
@@ -130,33 +100,8 @@ func runPGPush(args []string) {
 	)
 	defer stop()
 
-	// Read the schema version before EnsureSchema upgrades it so
-	// we can detect a v1→v2 transition and force a full push.
-	// Errors (e.g. pre-v1 schema where sync_metadata doesn't
-	// exist yet) are treated as version 0.
-	priorVersion, _ := postgres.GetSchemaVersion(ctx, ps.DB())
 	if err := ps.EnsureSchema(ctx); err != nil {
 		fatal("pg push schema: %v", err)
-	}
-	if !forceFull && priorVersion < postgres.SchemaVersion {
-		forceFull = true
-		log.Printf(
-			"pg push: schema upgrade v%d→v%d detected; "+
-				"forcing full push to backfill is_system",
-			priorVersion, postgres.SchemaVersion,
-		)
-	}
-	// Also force full if a previous push was interrupted
-	// mid-backfill (backfill_pending flag is still set).
-	if !forceFull && postgres.IsBackfillPendingForMachine(
-		ctx, ps.DB(), pgCfg.MachineName,
-	) {
-		forceFull = true
-		log.Printf(
-			"pg push: is_system backfill incomplete " +
-				"(previous push interrupted); " +
-				"forcing full push to resume",
-		)
 	}
 	result, err := ps.Push(ctx, forceFull)
 	if err != nil {

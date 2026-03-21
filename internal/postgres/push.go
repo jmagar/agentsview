@@ -54,49 +54,6 @@ func (s *Sync) Push(
 	start := time.Now()
 	var result PushResult
 
-	// Detect a schema upgrade that requires a full push to backfill
-	// newly added columns. Specifically, messages.is_system was added
-	// in SchemaVersion 2: existing mirrored rows default to FALSE, so
-	// a full repush is needed to propagate real is_system values to
-	// all historical sessions.
-	if !full {
-		s.schemaMu.Lock()
-		notDone := !s.schemaDone
-		s.schemaMu.Unlock()
-		if notDone {
-			priorVersion, vErr := GetSchemaVersion(ctx, s.pg)
-			if vErr != nil {
-				// sync_metadata missing (pre-versioned
-				// schema) or other error — treat as v0.
-				priorVersion = 0
-			}
-			if priorVersion < SchemaVersion {
-				full = true
-				log.Printf(
-					"pgsync: schema upgrade v%d→v%d "+
-						"detected; forcing full push "+
-						"to backfill is_system",
-					priorVersion, SchemaVersion,
-				)
-			}
-		}
-		// Always check the backfill_pending flag — it survives
-		// process restarts and catches interrupted full pushes
-		// regardless of schemaDone state.
-		if !full && IsBackfillPendingForMachine(
-			ctx, s.pg, s.machine,
-		) {
-			full = true
-			log.Printf(
-				"pgsync: is_system backfill incomplete "+
-					"for machine %q (previous push "+
-					"interrupted); forcing full push "+
-					"to resume",
-				s.machine,
-			)
-		}
-	}
-
 	if err := s.normalizeSyncTimestamps(ctx); err != nil {
 		return result, err
 	}
@@ -244,34 +201,6 @@ func (s *Sync) Push(
 		); err != nil {
 			return result, err
 		}
-		if full {
-			pgCount, countErr := s.pgSessionsWithMessagesCount(ctx)
-			if countErr != nil {
-				log.Printf(
-					"pg push: checking pg session "+
-						"count: %v", countErr,
-				)
-			} else if pgCount > 0 {
-				log.Printf(
-					"pg push: %d PG sessions for "+
-						"machine %q have no local "+
-						"source; their is_system "+
-						"values may be stale — "+
-						"backfill_pending retained",
-					pgCount, s.machine,
-				)
-			}
-			// Only clear backfill_pending when no PG
-			// sessions with messages remain un-pushed.
-			// Sessions with zero messages have nothing
-			// to backfill.
-			if countErr == nil && pgCount == 0 {
-				clearBackfillPending(
-					ctx, s.pg, s.machine,
-				)
-				clearStaleBackfillKeys(ctx, s.pg)
-			}
-		}
 		result.Duration = time.Since(start)
 		return result, nil
 	}
@@ -330,83 +259,8 @@ func (s *Sync) Push(
 		return result, err
 	}
 
-	// Full push succeeded — mark backfill complete so the
-	// next push (and pg serve) know the schema is consistent.
-	// Only clear backfill_pending when every PG session for
-	// this machine was actually re-pushed. Orphaned PG
-	// sessions (no local source) retain stale is_system
-	// values, so the flag must stay until they are resolved.
-	if full && result.Errors == 0 {
-		pushedIDs := make(map[string]struct{}, len(pushed))
-		for _, sess := range pushed {
-			pushedIDs[sess.ID] = struct{}{}
-		}
-		orphaned, countErr := s.pgUncoveredSessionCount(
-			ctx, pushedIDs,
-		)
-		if countErr != nil {
-			log.Printf(
-				"pg push: checking coverage: %v", countErr,
-			)
-		} else if orphaned > 0 {
-			log.Printf(
-				"pg push: %d PG sessions for machine %q "+
-					"have no local source; their "+
-					"is_system values may be stale "+
-					"— backfill_pending retained",
-				orphaned, s.machine,
-			)
-		}
-		if countErr == nil && orphaned == 0 {
-			clearBackfillPending(
-				ctx, s.pg, s.machine,
-			)
-			clearStaleBackfillKeys(ctx, s.pg)
-		}
-	}
-
 	result.Duration = time.Since(start)
 	return result, nil
-}
-
-// pgUncoveredSessionCount returns how many PG sessions for
-// this machine were NOT in the pushedIDs set and have at
-// least one message row. Sessions with zero messages have
-// nothing to backfill, so they are excluded.
-func (s *Sync) pgUncoveredSessionCount(
-	ctx context.Context, pushedIDs map[string]struct{},
-) (int, error) {
-	rows, err := s.pg.QueryContext(ctx,
-		`SELECT s.id FROM sessions s
-		 WHERE s.machine = $1
-		   AND EXISTS (
-		     SELECT 1 FROM messages m
-		     WHERE m.session_id = s.id
-		   )`,
-		s.machine,
-	)
-	if err != nil {
-		if isUndefinedTable(err) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf(
-			"listing pg sessions: %w", err,
-		)
-	}
-	defer rows.Close()
-	uncovered := 0
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return 0, fmt.Errorf(
-				"scanning pg session id: %w", err,
-			)
-		}
-		if _, ok := pushedIDs[id]; !ok {
-			uncovered++
-		}
-	}
-	return uncovered, rows.Err()
 }
 
 // pgSessionCount returns the number of sessions in PG for
@@ -425,35 +279,6 @@ func (s *Sync) pgSessionCount(
 		}
 		return 0, fmt.Errorf(
 			"counting pg sessions: %w", err,
-		)
-	}
-	return count, nil
-}
-
-// pgSessionsWithMessagesCount returns how many PG sessions
-// for this machine have at least one message row. Used for
-// backfill coverage checks — sessions with zero messages
-// have nothing to backfill.
-func (s *Sync) pgSessionsWithMessagesCount(
-	ctx context.Context,
-) (int, error) {
-	var count int
-	err := s.pg.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sessions s
-		 WHERE s.machine = $1
-		   AND EXISTS (
-		     SELECT 1 FROM messages m
-		     WHERE m.session_id = s.id
-		   )`,
-		s.machine,
-	).Scan(&count)
-	if err != nil {
-		if isUndefinedTable(err) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf(
-			"counting pg sessions with messages: %w",
-			err,
 		)
 	}
 	return count, nil

@@ -8,6 +8,7 @@ import (
 
 func TestSearch(t *testing.T) {
 	d := testDB(t)
+	requireFTS(t, d)
 
 	// Session s1: older ended_at, agent "claude"
 	insertSession(t, d, "s1", "proj-a",
