@@ -1,0 +1,20 @@
+services:
+  agentsview:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agentsview:latest
+    container_name: agentsview
+    restart: unless-stopped
+    # -host 0.0.0.0 required: default is 127.0.0.1 (loopback-only inside container)
+    command: ["-host", "0.0.0.0"]
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persist SQLite DB and config
+      - ${HOME}/.agentsview:/data
+      # Claude Code sessions (read-only)
+      - ${HOME}/.claude/projects:/sessions/claude:ro
+    environment:
+      AGENT_VIEWER_DATA_DIR: /data
+      CLAUDE_PROJECTS_DIR: /sessions/claude

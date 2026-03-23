@@ -1,0 +1,22 @@
+# Desktop app — not needed in container
+desktop/
+
+# Build outputs
+dist/
+agentsview
+internal/web/dist/
+
+# Frontend deps — reinstalled in container
+frontend/node_modules/
+
+# Go build cache
+vendor/
+
+# Git history — not needed for build
+.git/
+.github/
+
+# Docs and tests (not compiled into binary)
+docs/
+*.md
+!README.md
