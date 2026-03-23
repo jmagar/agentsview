@@ -396,6 +396,24 @@ func (e *Engine) classifyOnePath(
 		}
 	}
 
+	// Kimi: <kimiDir>/<project-hash>/<session-uuid>/wire.jsonl
+	for _, kimiDir := range e.agentDirs[parser.AgentKimi] {
+		if kimiDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(kimiDir, path); ok {
+			parts := strings.Split(rel, sep)
+			if len(parts) != 3 || parts[2] != "wire.jsonl" {
+				continue
+			}
+			return parser.DiscoveredFile{
+				Path:    path,
+				Project: parts[0],
+				Agent:   parser.AgentKimi,
+			}, true
+		}
+	}
+
 	// Amp: <ampDir>/T-*.json
 	for _, ampDir := range e.agentDirs[parser.AgentAmp] {
 		if ampDir == "" {
@@ -1281,6 +1299,8 @@ func (e *Engine) processFile(
 		res = e.processPi(file, info)
 	case parser.AgentOpenClaw:
 		res = e.processOpenClaw(file, info)
+	case parser.AgentKimi:
+		res = e.processKimi(file, info)
 	default:
 		res = processResult{
 			err: fmt.Errorf(
@@ -1726,6 +1746,35 @@ func (e *Engine) processOpenClaw(
 	}
 
 	sess, msgs, err := parser.ParseOpenClawSession(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if sess == nil {
+		return processResult{}
+	}
+
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil {
+		sess.File.Hash = hash
+	}
+
+	return processResult{
+		results: []parser.ParseResult{
+			{Session: *sess, Messages: msgs},
+		},
+	}
+}
+
+func (e *Engine) processKimi(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if e.shouldSkipByPath(file.Path, info) {
+		return processResult{skip: true}
+	}
+
+	sess, msgs, err := parser.ParseKimiSession(
 		file.Path, file.Project, e.machine,
 	)
 	if err != nil {
@@ -2263,6 +2312,10 @@ func (e *Engine) SyncSingleSession(sessionID string) error {
 		} else {
 			file.Project = filepath.Base(filepath.Dir(path))
 		}
+	case parser.AgentKimi:
+		// path is <kimiDir>/<project-hash>/<session-uuid>/wire.jsonl
+		// Derive project from two levels up.
+		file.Project = filepath.Base(filepath.Dir(filepath.Dir(path)))
 	}
 
 	res := e.processFile(file)
