@@ -234,6 +234,7 @@ def _build_metadata(version: str, readme: str | None) -> str:
         "Name: agentsview",
         f"Version: {version}",
         "Summary: Local web viewer for AI agent sessions",
+        "Home-page: https://github.com/wesm/agentsview",
         "Author: Wes McKinney",
         "License: MIT",
         "Requires-Python: >=3.9",
