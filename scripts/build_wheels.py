@@ -221,12 +221,14 @@ def build_wheel(
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for arcname, data, unix_mode in entries:
             info = zipfile.ZipInfo(arcname)
+            info.compress_type = zipfile.ZIP_DEFLATED
             # Include S_IFREG so pip recognizes the file type and
             # applies permissions (including +x) during installation
             info.external_attr = (stat.S_IFREG | unix_mode) << 16
             zf.writestr(info, data)
         # Write RECORD last
         record_info = zipfile.ZipInfo(f"{dist_info}/RECORD")
+        record_info.compress_type = zipfile.ZIP_DEFLATED
         record_info.external_attr = (stat.S_IFREG | 0o644) << 16
         zf.writestr(record_info, record_content.encode())
 
@@ -298,7 +300,12 @@ def build_all_wheels(
         parsed = parse_archive_filename(archive_path.name)
         if parsed is None:
             continue
-        platform_key, _archive_version = parsed
+        platform_key, archive_version = parsed
+        if archive_version != version:
+            raise RuntimeError(
+                f"{archive_path.name}: archive version {archive_version}"
+                f" does not match --version {version}"
+            )
         found_platforms.add(platform_key)
         binary_name = PLATFORM_MAP[platform_key]["binary_name"]
         binary_content = extract_binary(archive_path, binary_name)

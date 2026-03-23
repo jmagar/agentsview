@@ -208,6 +208,14 @@ class TestBuildWheel:
         unix_mode = (info.external_attr >> 16) & 0xFFFF
         assert oct(unix_mode & 0o777) == oct(0o755)
 
+    def test_wheel_files_are_compressed(self, tmp_path: Path) -> None:
+        whl = build_wheel(b"x" * 10000, tmp_path, "0.15.0", "linux_amd64")
+        with zipfile.ZipFile(whl) as zf:
+            for info in zf.infolist():
+                assert info.compress_type == zipfile.ZIP_DEFLATED, (
+                    f"{info.filename} uses {info.compress_type}, expected DEFLATED"
+                )
+
     def test_binary_has_regular_file_type_bit(self, tmp_path: Path) -> None:
         whl = build_wheel(b"fake", tmp_path, "0.15.0", "linux_amd64")
         with zipfile.ZipFile(whl) as zf:
@@ -357,15 +365,13 @@ class TestBuildAllWheels:
         build_all_wheels(input_dir, output_dir, "0.15.0")
         assert output_dir.exists()
 
-    def test_version_override(self, tmp_path: Path) -> None:
+    def test_version_mismatch_raises(self, tmp_path: Path) -> None:
         input_dir = tmp_path / "input"
         output_dir = tmp_path / "output"
         input_dir.mkdir()
-        # Archives have version 0.15.0 but we pass 0.16.0 as override
         self._make_fake_archives(input_dir, "0.15.0")
-        wheels = build_all_wheels(input_dir, output_dir, "0.16.0")
-        assert all("0.16.0" in w.name for w in wheels)
-        assert len(wheels) == 5
+        with pytest.raises(RuntimeError, match="does not match"):
+            build_all_wheels(input_dir, output_dir, "0.16.0")
 
     def test_all_wheels_are_valid_zips(self, tmp_path: Path) -> None:
         input_dir = tmp_path / "input"
