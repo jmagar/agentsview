@@ -100,9 +100,17 @@ Windows to propagate the exit code.
 Add a `pypi` job to `.github/workflows/release.yml` that runs after the
 existing `build` job:
 
-1. Downloads all build artifacts
-2. Extracts archives into a flat directory
-3. Runs `build_wheels.py` to produce wheels
+1. Downloads all build artifacts (each in its own subdirectory:
+   `agentsview-linux-amd64/`, `agentsview-darwin-arm64/`, etc.)
+2. Runs `build_wheels.py` with `--input-dir artifacts/` — the script
+   scans for `.tar.gz` and `.zip` archives, parses their filenames
+   (e.g., `agentsview_0.15.0_linux_amd64.tar.gz`) to determine the
+   platform, extracts the binary from each, and builds the wheel.
+   Archives are never extracted into a flat directory — filenames carry
+   the platform identity.
+3. Smoke-tests the native-platform wheel: `pip install <wheel>` then
+   `agentsview --version` to verify metadata, RECORD, entry point
+   wiring, and executable permissions are correct.
 4. Publishes to PyPI using `pypa/gh-action-pypi-publish` with Trusted
    Publishers (OIDC)
 
@@ -131,6 +139,12 @@ use official PyPA manylinux containers:
 
 `actions/setup-go` and `actions/setup-node` work inside these containers
 (they download standalone binaries).
+
+**Verification**: After building each Linux binary, check its glibc
+version requirements with `objdump -T <binary> | grep GLIBC_ | sort -V`
+and verify no symbol exceeds `GLIBC_2.28`. This runs as a build step
+before the archive is created, failing the build if the binary would
+violate the `manylinux_2_28` tag.
 
 #### 5. macOS deployment target
 
@@ -170,6 +184,18 @@ the package permanently.
 
 The version tag (e.g., `v0.15.0`) has the `v` prefix stripped for PyPI
 (becomes `0.15.0`). This matches PEP 440 conventions.
+
+### Assumptions
+
+- **Python runtime required**: `pip install agentsview` assumes the user
+  has Python 3.8+ installed. This is not a standalone binary installer
+  — it is a distribution channel for environments that already have
+  Python and pip available (which is the norm in corporate environments
+  using Artifactory/Nexus).
+- **Unsupported platforms**: Users on platforms without a matching wheel
+  (e.g., linux-arm32, FreeBSD) get pip's standard "no matching
+  distribution found" error. No special handling needed — the GitHub
+  releases page remains available for manual downloads.
 
 ## Out of scope
 
