@@ -12,6 +12,7 @@ import hashlib
 import io
 import os
 import re
+import stat
 import sys
 import tarfile
 import zipfile
@@ -121,13 +122,17 @@ _INIT_PY_UNIX = """\
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from pathlib import Path
 
 
 def main() -> None:
-    bin_path = Path(__file__).parent / "bin" / "agentsview"
-    os.execvp(str(bin_path), [str(bin_path)] + sys.argv[1:])
+    bin_path = str(Path(__file__).parent / "bin" / "agentsview")
+    mode = os.stat(bin_path).st_mode
+    if not (mode & stat.S_IXUSR):
+        os.chmod(bin_path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    os.execvp(bin_path, [bin_path] + sys.argv[1:])
 """
 
 _INIT_PY_WINDOWS = """\
@@ -216,12 +221,13 @@ def build_wheel(
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for arcname, data, unix_mode in entries:
             info = zipfile.ZipInfo(arcname)
-            # Store Unix permissions in the upper 16 bits of external_attr
-            info.external_attr = (unix_mode & 0xFFFF) << 16
+            # Include S_IFREG so pip recognizes the file type and
+            # applies permissions (including +x) during installation
+            info.external_attr = (stat.S_IFREG | unix_mode) << 16
             zf.writestr(info, data)
         # Write RECORD last
         record_info = zipfile.ZipInfo(f"{dist_info}/RECORD")
-        record_info.external_attr = (0o644 & 0xFFFF) << 16
+        record_info.external_attr = (stat.S_IFREG | 0o644) << 16
         zf.writestr(record_info, record_content.encode())
 
     whl_path.write_bytes(buf.getvalue())
@@ -262,11 +268,15 @@ def _build_wheel_file(wheel_tag: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+EXPECTED_PLATFORMS = frozenset(PLATFORM_MAP.keys())
+
+
 def build_all_wheels(
     input_dir: Path,
     output_dir: Path,
     version: str,
     readme: str | None = None,
+    require_all: bool = False,
 ) -> list[Path]:
     """Scan input_dir for release archives and build a wheel for each.
 
@@ -275,22 +285,32 @@ def build_all_wheels(
         output_dir: Directory where wheel files will be written.
         version: Version string to embed in wheels (overrides archive version).
         readme: Optional README content to embed in METADATA.
+        require_all: If True, raise if any expected platform is missing.
 
     Returns:
         List of paths to the created wheel files.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     wheels: list[Path] = []
+    found_platforms: set[str] = set()
 
     for archive_path in sorted(input_dir.iterdir()):
         parsed = parse_archive_filename(archive_path.name)
         if parsed is None:
             continue
         platform_key, _archive_version = parsed
+        found_platforms.add(platform_key)
         binary_name = PLATFORM_MAP[platform_key]["binary_name"]
         binary_content = extract_binary(archive_path, binary_name)
         whl = build_wheel(binary_content, output_dir, version, platform_key, readme)
         wheels.append(whl)
+
+    if require_all:
+        missing = EXPECTED_PLATFORMS - found_platforms
+        if missing:
+            raise RuntimeError(
+                f"Missing archives for platforms: {', '.join(sorted(missing))}"
+            )
 
     return wheels
 
@@ -323,6 +343,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Path to README.md to embed in wheel METADATA",
     )
+    parser.add_argument(
+        "--require-all",
+        action="store_true",
+        help="Fail if any expected platform archive is missing",
+    )
     return parser.parse_args(argv)
 
 
@@ -332,7 +357,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.readme is not None:
         readme = args.readme.read_text(encoding="utf-8")
 
-    wheels = build_all_wheels(args.input_dir, args.output_dir, args.version, readme)
+    wheels = build_all_wheels(
+        args.input_dir,
+        args.output_dir,
+        args.version,
+        readme,
+        require_all=args.require_all,
+    )
+    if not wheels:
+        print("Error: no wheels were built", file=sys.stderr)
+        sys.exit(1)
     for whl in wheels:
         print(whl)
     print(f"Built {len(wheels)} wheel(s).")

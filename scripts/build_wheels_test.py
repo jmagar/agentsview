@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import stat
 import tarfile
 import zipfile
 from pathlib import Path
@@ -98,7 +99,14 @@ class TestParseArchiveFilename:
     def test_sha256sums_returns_none(self) -> None:
         assert parse_archive_filename("agentsview_0.15.0_SHA256SUMS") is None
 
-    def test_path_with_directory_only_basename_used(self) -> None:
+    def test_path_with_directory_uses_basename(self) -> None:
+        result = parse_archive_filename(
+            "releases/agentsview_0.15.0_linux_arm64.tar.gz"
+        )
+        # parse_archive_filename only accepts basenames, so paths return None
+        assert result is None
+
+        # The caller is responsible for passing just the filename
         result = parse_archive_filename("agentsview_0.15.0_linux_arm64.tar.gz")
         assert result == ("linux_arm64", "0.15.0")
 
@@ -197,9 +205,16 @@ class TestBuildWheel:
         whl = build_wheel(b"fake", tmp_path, "0.15.0", "linux_amd64")
         with zipfile.ZipFile(whl) as zf:
             info = zf.getinfo("agentsview/bin/agentsview")
-        # external_attr upper 16 bits hold Unix permissions
         unix_mode = (info.external_attr >> 16) & 0xFFFF
         assert oct(unix_mode & 0o777) == oct(0o755)
+
+    def test_binary_has_regular_file_type_bit(self, tmp_path: Path) -> None:
+        whl = build_wheel(b"fake", tmp_path, "0.15.0", "linux_amd64")
+        with zipfile.ZipFile(whl) as zf:
+            info = zf.getinfo("agentsview/bin/agentsview")
+        # S_IFREG (0o100000) must be set so pip applies permissions
+        unix_mode = (info.external_attr >> 16) & 0xFFFF
+        assert unix_mode & stat.S_IFREG, "S_IFREG must be set"
 
     def test_windows_wheel_uses_exe_binary(self, tmp_path: Path) -> None:
         whl = build_wheel(b"fake", tmp_path, "0.15.0", "windows_amd64")
@@ -360,3 +375,26 @@ class TestBuildAllWheels:
         wheels = build_all_wheels(input_dir, output_dir, "0.15.0")
         for whl in wheels:
             assert zipfile.is_zipfile(whl), f"{whl.name} is not a valid zip"
+
+    def test_require_all_fails_on_missing_platform(self, tmp_path: Path) -> None:
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        # Only create linux_amd64
+        (input_dir / "agentsview_1.0.0_linux_amd64.tar.gz").write_bytes(
+            _make_targz("agentsview", b"fake")
+        )
+        with pytest.raises(RuntimeError, match="Missing archives"):
+            build_all_wheels(
+                input_dir, output_dir, "1.0.0", require_all=True
+            )
+
+    def test_require_all_passes_with_all_platforms(self, tmp_path: Path) -> None:
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        self._make_fake_archives(input_dir, "1.0.0")
+        wheels = build_all_wheels(
+            input_dir, output_dir, "1.0.0", require_all=True
+        )
+        assert len(wheels) == 5

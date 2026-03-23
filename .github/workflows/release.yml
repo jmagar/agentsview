@@ -9,32 +9,17 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  build-linux:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            goos: linux
-            goarch: amd64
-            container: quay.io/pypa/manylinux_2_28_x86_64
-          - os: ubuntu-latest
-            goos: linux
-            goarch: arm64
+          - goarch: amd64
+          - goarch: arm64
             cc: aarch64-linux-gnu-gcc
-            container: quay.io/pypa/manylinux_2_28_x86_64
-          - os: macos-15
-            goos: darwin
-            goarch: amd64
-          - os: macos-15
-            goos: darwin
-            goarch: arm64
-          - os: windows-latest
-            goos: windows
-            goarch: amd64
 
-    runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container || '' }}
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -58,9 +43,89 @@ jobs:
           rm -rf internal/web/dist
           cp -r frontend/dist internal/web/dist
 
-      - name: Install cross-compiler (Linux ARM64)
-        if: matrix.goarch == 'arm64' && matrix.goos == 'linux'
+      - name: Install cross-compiler (ARM64)
+        if: matrix.goarch == 'arm64'
         run: dnf install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      - name: Build
+        shell: bash
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+          CC: ${{ matrix.cc || '' }}
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          COMMIT=${GITHUB_SHA::8}
+          BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          mkdir -p dist
+          LDFLAGS="-s -w -X main.version=v${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}"
+          go build -tags fts5 -ldflags="$LDFLAGS" -trimpath \
+            -o dist/agentsview ./cmd/agentsview
+
+          # Smoke test (skip cross-compiled arm64 on x86_64 host)
+          if [ "$GOARCH" = "$(go env GOHOSTARCH)" ]; then
+            ./dist/agentsview --version
+          fi
+
+          # Verify glibc compatibility
+          MAX_GLIBC="GLIBC_2.28"
+          HIGHEST=$(objdump -T dist/agentsview | grep -oP 'GLIBC_\d+\.\d+' | sort -t. -k1,1n -k2,2n | tail -1)
+          echo "Highest glibc symbol: $HIGHEST (max allowed: $MAX_GLIBC)"
+          if [ "$(printf '%s\n%s' "$MAX_GLIBC" "$HIGHEST" | sort -t. -k1,1n -k2,2n | tail -1)" != "$MAX_GLIBC" ]; then
+            echo "ERROR: Binary requires $HIGHEST but wheel claims $MAX_GLIBC"
+            exit 1
+          fi
+
+          cd dist
+          ARCHIVE="agentsview_${VERSION}_linux_${{ matrix.goarch }}.tar.gz"
+          tar czf "$ARCHIVE" agentsview
+          rm agentsview
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        with:
+          name: agentsview-linux-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            goos: darwin
+            goarch: amd64
+          - os: macos-15
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417  # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: "24"
+
+      - name: Build frontend
+        run: npm ci && npm run build
+        working-directory: frontend
+
+      - name: Embed frontend
+        shell: bash
+        run: |
+          rm -rf internal/web/dist
+          cp -r frontend/dist internal/web/dist
 
       - name: Setup MinGW (Windows)
         if: matrix.goos == 'windows'
@@ -77,7 +142,6 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "1"
-          CC: ${{ matrix.cc || '' }}
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.goos == 'darwin' && '11.0' || '' }}
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
@@ -91,21 +155,8 @@ jobs:
           go build -tags fts5 -ldflags="$LDFLAGS" -trimpath \
             -o dist/agentsview${EXT} ./cmd/agentsview
 
-          # Smoke test (skip cross-compiled binaries that can't run on host)
-          if [ "$GOOS" = "$(go env GOHOSTOS)" ] && [ "$GOARCH" = "$(go env GOHOSTARCH)" ]; then
-            ./dist/agentsview${EXT} --version
-          fi
-
-          # Verify glibc compatibility (Linux)
-          if [ "$GOOS" = "linux" ]; then
-            MAX_GLIBC="GLIBC_2.28"
-            HIGHEST=$(objdump -T dist/agentsview | grep -oP 'GLIBC_\d+\.\d+' | sort -t. -k1,1n -k2,2n | tail -1)
-            echo "Highest glibc symbol: $HIGHEST (max allowed: $MAX_GLIBC)"
-            if [ "$(printf '%s\n%s' "$MAX_GLIBC" "$HIGHEST" | sort -t. -k1,1n -k2,2n | tail -1)" != "$MAX_GLIBC" ]; then
-              echo "ERROR: Binary requires $HIGHEST but wheel claims $MAX_GLIBC"
-              exit 1
-            fi
-          fi
+          # Smoke test
+          ./dist/agentsview${EXT} --version
 
           # Verify macOS deployment target
           if [ "$GOOS" = "darwin" ]; then
@@ -135,7 +186,7 @@ jobs:
             dist/*.zip
 
   release:
-    needs: build
+    needs: [build-linux, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -190,7 +241,7 @@ jobs:
           generate_release_notes: ${{ steps.tag_message.outputs.has_body != 'true' }}
 
   pypi:
-    needs: [build, release]
+    needs: [build-linux, build, release]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -217,7 +268,8 @@ jobs:
             --version "$VERSION" \
             --input-dir artifacts \
             --output-dir wheels \
-            --readme README.md
+            --readme README.md \
+            --require-all
 
       - name: Smoke test wheel
         run: |
