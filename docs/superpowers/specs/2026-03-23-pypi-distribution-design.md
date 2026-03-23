@@ -87,7 +87,7 @@ Tag: py3-none-{platform_tag}
 ```
 
 **METADATA required fields**: `Metadata-Version: 2.1`, `Name`,
-`Version`, `Summary`, `Requires-Python: >=3.8`, `License`, `Home-page`,
+`Version`, `Summary`, `Requires-Python: >=3.9`, `License`, `Home-page`,
 `Description-Content-Type: text/markdown` (with README as long
 description).
 
@@ -108,17 +108,21 @@ existing `build` job:
    platform, extracts the binary from each, and builds the wheel.
    Archives are never extracted into a flat directory — filenames carry
    the platform identity.
-3. Smoke-tests the native-platform wheel: `pip install <wheel>` then
-   `agentsview --version` to verify metadata, RECORD, entry point
-   wiring, and executable permissions are correct.
-4. Publishes to PyPI using `pypa/gh-action-pypi-publish` with Trusted
+3. Publishes to PyPI using `pypa/gh-action-pypi-publish` with Trusted
    Publishers (OIDC)
 
 The `pypi` job uses a GitHub environment named `pypi` for the OIDC
 token exchange. It requires `id-token: write` permission for the OIDC
 exchange (the existing top-level `contents: read` is insufficient).
 
-#### 4. Linux builds: manylinux_2_28 compatibility
+#### 4. Per-platform smoke tests
+
+Each build job runs `agentsview --version` on the freshly compiled
+binary before archiving it. This catches obvious build failures (missing
+libraries, wrong architecture, broken entry point) on all five
+platforms — not just the one the `pypi` job runs on.
+
+#### 5. Linux builds: manylinux_2_28 compatibility
 
 The current release workflow builds Linux binaries on `ubuntu-latest`
 (glibc 2.39). Binaries built on glibc 2.34+ require glibc 2.34+ at
@@ -146,12 +150,17 @@ and verify no symbol exceeds `GLIBC_2.28`. This runs as a build step
 before the archive is created, failing the build if the binary would
 violate the `manylinux_2_28` tag.
 
-#### 5. macOS deployment target
+#### 6. macOS deployment target
 
 The macOS builds must set `MACOSX_DEPLOYMENT_TARGET=11.0` during
 compilation to ensure the binary is compatible with macOS 11+. Without
 this, binaries built on macOS 15 runners may only work on macOS 15+,
 making the `macosx_11_0` wheel tag incorrect.
+
+**Verification**: After building each macOS binary, check the minimum OS
+version in the Mach-O header with
+`otool -l <binary> | grep -A3 LC_BUILD_VERSION` and verify the `minos`
+field shows 11.0. This runs as a build step before archiving.
 
 ### Platform mapping
 
@@ -207,13 +216,22 @@ The version tag (e.g., `v0.15.0`) has the `v` prefix stripped for PyPI
 - **npm package** — can add later if requested
 - **TestPyPI dry runs** — can add later for pre-release validation
 
+## Prerequisites
+
+- **PyPI package name**: Confirm `agentsview` is available on PyPI
+  (verified 2026-03-23: `https://pypi.org/pypi/agentsview/json` returns
+  404). Register the name by completing the trusted publisher setup
+  before the first release with PyPI publishing.
+
 ## Implementation plan
 
 1. Write `scripts/build_wheels.py`
 2. Add tests for the wheel-building script
 3. Update `.github/workflows/release.yml`:
    a. Change Linux build jobs to use manylinux_2_28 containers
-   b. Add `pypi` job (download artifacts, build wheels, publish)
+   b. Add per-platform smoke tests and verification steps
+   c. Add macOS `MACOSX_DEPLOYMENT_TARGET=11.0` and verification
+   d. Add `pypi` job (download artifacts, build wheels, publish)
 4. Manual setup: register trusted publisher on pypi.org, create `pypi`
    GitHub environment
 5. Tag a release to test the full pipeline
