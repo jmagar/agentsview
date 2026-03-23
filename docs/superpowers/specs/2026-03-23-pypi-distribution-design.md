@@ -197,7 +197,7 @@ The version tag (e.g., `v0.15.0`) has the `v` prefix stripped for PyPI
 ### Assumptions
 
 - **Python runtime required**: `pip install agentsview` assumes the user
-  has Python 3.8+ installed. This is not a standalone binary installer
+  has Python 3.9+ installed. This is not a standalone binary installer
   — it is a distribution channel for environments that already have
   Python and pip available (which is the norm in corporate environments
   using Artifactory/Nexus).
