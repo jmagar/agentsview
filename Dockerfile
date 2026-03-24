@@ -36,8 +36,20 @@ RUN CGO_ENABLED=1 go build \
 # ─── Stage 3: Minimal runtime ──────────────────────────────────────────────
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (for codex + gemini CLIs)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Claude CLI
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && ln -s /root/.local/bin/claude /usr/local/bin/claude
+
+# Install Codex and Gemini CLIs
+RUN npm install -g @openai/codex @google/gemini-cli
 
 COPY --from=builder /build/agentsview /usr/local/bin/agentsview
 
