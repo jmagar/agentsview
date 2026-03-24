@@ -128,7 +128,13 @@ class InsightsStore {
   }
 
   generate() {
-    const clientId = crypto.randomUUID();
+    // crypto.randomUUID() requires a secure context (HTTPS/localhost).
+    // Fall back to Math.random for plain-HTTP deployments.
+    const clientId =
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2) +
+          Math.random().toString(36).slice(2);
     const snap = {
       type: this.type,
       dateFrom: this.dateFrom,
